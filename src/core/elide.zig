@@ -1,5 +1,5 @@
 //! Fitting text into a width the way Finder does: a name too long for its space
-//! keeps its beginning and its end — "Video by haa…mjIFtv].mp4" — so the extension
+//! keeps its beginning and its end ("Video by haa…mjIFtv].mp4"), so the extension
 //! and any trailing number stay readable. Measuring is the caller's (a font), passed
 //! as any value with `fn width(self, []const u8) f32`; the tests use a fixed pitch.
 

@@ -1,4 +1,4 @@
-//! DirCache: listings of folders other than the browser's own — the column view's
+//! DirCache: listings of folders other than the browser's own: the column view's
 //! ancestor and preview columns. One worker thread reads them (scan.readDir, never on
 //! the render thread); the UI asks with `get`, which returns what's cached (possibly a
 //! few seconds old, re-read in the background) or null while the first read runs.

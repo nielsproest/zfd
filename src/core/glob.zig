@@ -1,17 +1,17 @@
 //! Shell-style glob matching for the quick-search box, ported from the Go
 //! GoFileDialog `internal/ui/glob.go`. The Go version translated a glob into a
-//! regex and let `regexp` run it; Zig's std has no regex, so we match directly —
+//! regex and let `regexp` run it; Zig's std has no regex, so we match directly:
 //! simpler, allocation-free, and faster. Semantics are kept identical so the Go
 //! test cases carry over as a conformance suite (see the tests below).
 //!
-//! Metacharacters: `*` matches any run of bytes including none — and it DOES cross
+//! Metacharacters: `*` matches any run of bytes including none, and it DOES cross
 //! `/`, so a recursive search matches at any depth; `?` matches any single byte;
 //! `[...]` is a character class (`[!...]` or `[^...]` negates, `a-z` is a range).
 //! Everything else is literal. A match is anchored (whole string), per shell rules.
 //!
 //! NOTE: matching is byte-wise, not codepoint-wise. `?` therefore matches one
 //! *byte*, not one UTF-8 rune (the Go version matched runes). This is faithful for
-//! ASCII globs — which is every realistic quick-filter pattern — and keeps the hot
+//! ASCII globs (which is every realistic quick-filter pattern) and keeps the hot
 //! path branch-light. Codepoint-aware `?` is a deliberate future refinement.
 
 const std = @import("std");

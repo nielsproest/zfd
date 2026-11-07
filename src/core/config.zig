@@ -1,4 +1,4 @@
-//! Persisted UI settings — a tiny `key=value` file under ~/.config/zfd/settings.
+//! Persisted UI settings: a tiny `key=value` file under ~/.config/zfd/settings.
 //! GUI-free and pure (goal 2): parse/serialize are unit-tested; load/save do the
 //! I/O. Unknown or missing keys keep their defaults, so an old or partial file still
 //! loads. This is ZFD's answer to Go's internal/config.

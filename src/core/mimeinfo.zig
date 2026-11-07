@@ -1,6 +1,6 @@
 //! MIME resolution for the "Opens with" column and friendlier type names, ported
 //! from Go's internal/desktop/openswith.go. Pure file reads of the freedesktop shared
-//! databases — no GLib/GIO linking (goal 5):
+//! databases, no GLib/GIO linking (goal 5):
 //!   extension → MIME  (from $datadir/mime/globs)
 //!   MIME → default .desktop id  (from mimeapps.list, then mimeinfo.cache)
 //!   id → app Name  (parsing the .desktop, via desktop.zig)
@@ -52,7 +52,7 @@ fn load(io: std.Io, gpa: std.mem.Allocator, home: []const u8) Db {
         parseGlobs(a, &db, content);
     }
 
-    // application dirs (for mimeinfo.cache + id→Name) — the SAME set as the Open-with
+    // application dirs (for mimeinfo.cache + id→Name): the SAME set as the Open-with
     // picker (desktop.appDirs), so both agree on which apps exist (no flatpak/snap).
     db.app_dirs = desktop.appDirs(a, home) catch &.{};
 
@@ -167,7 +167,7 @@ pub fn typeName(io: std.Io, gpa: std.mem.Allocator, home: []const u8, name: []co
     return prettyMime(mime, out);
 }
 
-/// prettyMime turns a MIME type into a label into `out` — curated names first, else a
+/// prettyMime turns a MIME type into a label into `out`: curated names first, else a
 /// generic "<SUBTYPE> <media>" form (image/x-canon-cr2 → "CR2 image").
 pub fn prettyMime(mime: []const u8, out: []u8) []const u8 {
     const curated = [_]struct { m: []const u8, n: []const u8 }{
@@ -196,7 +196,7 @@ pub fn prettyMime(mime: []const u8, out: []u8) []const u8 {
     else if (std.mem.eql(u8, media, "text")) "text" else if (std.mem.eql(u8, media, "application")) "file" else return copyInto(out, mime);
 
     var cbuf: [64]u8 = undefined;
-    const cased = casing(sub, &cbuf); // separate buffer — mem.print reads it while writing `out`
+    const cased = casing(sub, &cbuf); // separate buffer: mem.print reads it while writing `out`
     return std.mem.print(out, "{s} {s}", .{ cased, suffix }) catch copyInto(out, mime);
 }
 

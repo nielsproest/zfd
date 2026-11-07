@@ -1,6 +1,6 @@
 //! Devices: the live list of block volumes (blockdev.zig) plus mount / unmount / eject,
 //! all off the render thread. One worker thread:
-//!   • re-lists volumes (lsblk) whenever /proc/partitions or the mount table changes —
+//!   • re-lists volumes (lsblk) whenever /proc/partitions or the mount table changes:
 //!     hotplug and mounts made elsewhere show up within about a second, and an idle
 //!     system costs one small file read per second, never a process spawn;
 //!   • runs queued actions through `udisksctl`, which talks to udisks over D-Bus and
@@ -91,7 +91,7 @@ pub const Devices = struct {
     servers: []netbrowse.Server = &.{}, // what the last look found
     network_state: NetworkState = .idle,
     gen: u64 = 0, // bumped whenever vols changes
-    busy: ?[]u8 = null, // device path an action is running on (owned) — for a spinner
+    busy: ?[]u8 = null, // device path an action is running on (owned), for a spinner
     requests: std.ArrayList(Request) = .empty,
     events: std.ArrayList(Event) = .empty,
     shutdown: bool = false,
@@ -500,7 +500,7 @@ pub const Devices = struct {
                     return self.fail("Could not run udisksctl (is udisks2 installed?)");
                 defer self.alloc.free(out.text);
                 // Not every drive can be powered off (SD readers, some enclosures). The
-                // volumes are already unmounted, so it is safe to pull — say nothing.
+                // volumes are already unmounted, so it is safe to pull; say nothing.
             },
         }
     }
@@ -712,7 +712,7 @@ pub const Devices = struct {
         if (self.wake) |w| w();
     }
 
-    /// fail reports udisksctl's error — its first meaningful line, minus the GDBus
+    /// fail reports udisksctl's error: its first meaningful line, minus the GDBus
     /// noise ("GDBus.Error:org.freedesktop.UDisks2.Error.NotAuthorized: …").
     /// failText reports an already-extracted message as is.
     fn failText(self: *Devices, text: []const u8) void {
@@ -727,7 +727,7 @@ pub const Devices = struct {
 
     const Output = struct { code: u8, text: []u8 };
 
-    /// runInput is run() with `input` on the child's stdin (through a pipe — for the
+    /// runInput is run() with `input` on the child's stdin (through a pipe, for the
     /// passphrase, which must never go on the command line or into a file).
     fn runInput(self: *Devices, argv: []const []const u8, input: []const u8) ?Output {
         const linux = std.os.linux;
@@ -818,7 +818,7 @@ pub fn errorLine(text: []const u8) []const u8 {
         var line = std.mem.trim(u8, raw, " \t\r");
         if (line.len == 0) continue;
         // Without a terminal (always, from a GUI) udisksctl first complains that it
-        // can't start its TEXT polkit agent — then carries on and the desktop's own
+        // can't start its TEXT polkit agent; then carries on and the desktop's own
         // agent asks for the password. That line is noise, never the reason.
         if (std.mem.indexOf(u8, line, "textual authentication agent") != null) continue;
         // "Error mounting /dev/sdb1: GDBus.Error:org.freedesktop.UDisks2.Error.Foo: Real reason"

@@ -16,27 +16,27 @@ pub const Measure = struct {
 // --- "poisoned struct" access -----------------------------------------------
 // Several cimgui structs (ImGuiIO, ImGuiListClipper, ImGuiInputTextCallbackData)
 // embed an `ImGuiContext*` field. ImGuiContext is the one genuinely-opaque type
-// (cimgui never defines it), so Zig refuses to lay those structs out — a `[*c]` to an
+// (cimgui never defines it), so Zig refuses to lay those structs out: a `[*c]` to an
 // opaque type can't be indexed. Passing a pointer to them is fine; reading a FIELD is
 // what triggers the error. So: where the field sits at a stable, padding-free offset,
 // we redeclare the C funcs with an opaque handle and mirror just that prefix (no C
 // shim). Where the struct is huge/heavily-padded (ImGuiIO's FontGlobalScale, the
-// input-char queue) a tiny C shim in imgui_shim.cpp stays — a mirror there would be
+// input-char queue) a tiny C shim in imgui_shim.cpp stays; a mirror there would be
 // silently wrong on any ImGui layout change.
 
-/// zfd_set_font_scale sets ImGuiIO.FontGlobalScale (imgui_shim.cpp) — FontGlobalScale
+/// zfd_set_font_scale sets ImGuiIO.FontGlobalScale (imgui_shim.cpp). FontGlobalScale
 /// is deep inside the huge ImGuiIO struct with no accessor, so a shim is the safe way.
 pub extern fn zfd_set_font_scale(scale: f32) void;
 
 /// zfd_input_chars copies this frame's typed ASCII chars into `out`, returns count.
-/// (Reads ImGuiIO.InputQueueCharacters — an ImVector field, also shim-only.)
+/// (Reads ImGuiIO.InputQueueCharacters, an ImVector field, also shim-only.)
 pub extern fn zfd_input_chars(out: [*]u8, max: c_int) c_int;
 
 /// zfd_load_font adds a TTF/OTF at `path` to the atlas (shim; the atlas is in the
 /// opaque ImGuiIO). Returns false if the file can't be loaded.
 pub extern fn zfd_load_font(path: [*:0]const u8, size: f32) bool;
 
-/// zfd_mouse_wheel returns this frame's vertical scroll delta (ImGuiIO field) — for
+/// zfd_mouse_wheel returns this frame's vertical scroll delta (ImGuiIO field), for
 /// Ctrl+scroll zoom, which works regardless of keyboard layout.
 pub extern fn zfd_mouse_wheel() f32;
 /// zfd_want_text_input reports whether a text field (in any window) has the keyboard.
@@ -88,7 +88,7 @@ pub fn loadUiFont(size: f32) void {
     }
 }
 
-// ImGuiIO.AddMouseButtonEvent IS a real cimgui function — call it with an opaque IO
+// ImGuiIO.AddMouseButtonEvent IS a real cimgui function: call it with an opaque IO
 // handle, no shim. (Used to inject a release after a WM move/resize grab.)
 const OpaqueIO = opaque {};
 extern fn igGetIO_Nil() *OpaqueIO;
@@ -101,7 +101,7 @@ pub fn releaseMouse() void {
 }
 
 // ImGuiListClipper: only DisplayStart/DisplayEnd are read, and they're the first two
-// members (offsets 0 and 4 — no padding), so a two-field mirror is safe.
+// members (offsets 0 and 4, no padding), so a two-field mirror is safe.
 pub const ListClipper = opaque {};
 pub extern fn ImGuiListClipper_ImGuiListClipper() *ListClipper;
 pub extern fn ImGuiListClipper_destroy(self: *ListClipper) void;
@@ -117,7 +117,7 @@ pub fn clipperRange(self: *ListClipper) struct { start: c_int, end: c_int } {
     return .{ .start = head.display_start, .end = head.display_end };
 }
 
-// InputText callback data — mirror of the fields up to SelectionEnd (Ctx as anyopaque
+// InputText callback data: mirror of the fields up to SelectionEnd (Ctx as anyopaque
 // so Zig will lay it out; exact field types → C ABI padding matches). Keeping the
 // param type `[*c]c.ImGuiInputTextCallbackData` means the fn still matches what
 // igInputText expects, so no fn-pointer cast is needed; we just view it as the mirror.
@@ -154,7 +154,7 @@ pub extern fn ImGuiInputTextCallbackData_DeleteChars(
     bytes_count: c_int,
 ) void;
 
-/// stemLen is the length of `name` up to (not including) its extension — so a text
+/// stemLen is the length of `name` up to (not including) its extension, so a text
 /// field can select the stem and leave the ".ext" intact. Leading-dot dotfiles and
 /// extension-less names return the full length. Pairs with selectStem below; used by
 /// the Save dialog name field and inline rename.
@@ -163,8 +163,8 @@ pub fn stemLen(name: []const u8) usize {
     return if (dot == 0) name.len else dot;
 }
 
-/// selectStem is an InputText callback: selects [0, stem) — the filename without its
-/// extension — when *UserData (an int stem length) is >= 0, then sets it to -1 so it
+/// selectStem is an InputText callback: selects [0, stem) (the filename without its
+/// extension) when *UserData (an int stem length) is >= 0, then sets it to -1 so it
 /// fires once per focus. For the Save dialog's name field.
 pub fn selectStem(data: [*c]c.ImGuiInputTextCallbackData) callconv(.c) c_int {
     const d: *InputTextCallbackData = @ptrCast(@alignCast(data));
@@ -178,7 +178,7 @@ pub fn selectStem(data: [*c]c.ImGuiInputTextCallbackData) callconv(.c) c_int {
     return 0;
 }
 
-/// textUnformatted draws a non-owning byte slice as-is — no printf interpretation,
+/// textUnformatted draws a non-owning byte slice as-is: no printf interpretation,
 /// so a '%' in a filename is safe (the exact trap called out in the Go project).
 pub fn textUnformatted(s: []const u8) void {
     c.igTextUnformatted(s.ptr, s.ptr + s.len);

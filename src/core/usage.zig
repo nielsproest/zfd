@@ -1,6 +1,6 @@
 //! Off-thread recursive disk-usage scanner for the treemap. Like the Scanner, one
 //! worker thread walks the tree so the render thread never does. It publishes
-//! results *incrementally* — an immutable Snapshot after every batch of children —
+//! results *incrementally* (an immutable Snapshot after every batch of children),
 //! so the treemap fills in and shows a progress bar (done/total) as sizes stream in
 //! (matching the Go version), instead of appearing all at once. Newer requests
 //! supersede older ones by generation.

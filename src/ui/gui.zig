@@ -12,8 +12,8 @@ const shell_mod = @import("shell.zig");
 const x11 = @import("x11.zig");
 
 /// run opens the window and drives the tabbed shell until it's closed. `reveal_name`,
-/// when set, is an entry in `start_override` to select + scroll into view once it loads
-/// — how `zfd <file>` / `zfd --select <file>` reveals a file in its folder.
+/// when set, is an entry in `start_override` to select + scroll into view once it loads.
+/// This is how `zfd <file>` / `zfd --select <file>` reveals a file in its folder.
 pub fn run(alloc: std.mem.Allocator, io: std.Io, trash_home: []const u8, home: []const u8, start_override: ?[]const u8, reveal_name: ?[]const u8, pos: ?[2]i32, csd: bool, debug: bool, settings: *core.config.Settings) !void {
     x11.debug = debug;
     var be = try Backend.init(csd, true);
@@ -155,7 +155,7 @@ fn nextAwake(win: ?*c.GLFWwindow, last: *[2]f64, awake: i32) i32 {
 var key_activity: bool = false;
 
 /// keyCallback handles Ctrl+ +/-/0 (item size) by the key's LAYOUT character (via glfwGetKeyName /
-/// XKB), not GLFW's US-physical key code — so "+"/"-" work on any keyboard layout
+/// XKB), not GLFW's US-physical key code, so "+"/"-" work on any keyboard layout
 /// (ImGui only sees the US physical position, which conflates them on non-US layouts).
 /// Chained after ImGui's own key callback (installed before ImGui_ImplGlfw init).
 fn keyCallback(window: ?*c.GLFWwindow, key: c_int, scancode: c_int, action: c_int, mods: c_int) callconv(.c) void {
@@ -178,7 +178,7 @@ fn keyCallback(window: ?*c.GLFWwindow, key: c_int, scancode: c_int, action: c_in
 
 /// dropCallback receives files dropped onto the window from another app. It records the
 /// paths + the drop position on the active tab; the table resolves the position next
-/// frame — onto a folder row (import into it) or anywhere else (into the current dir).
+/// frame: onto a folder row (import into it) or anywhere else (into the current dir).
 /// GLFW invokes it during glfwPollEvents on the main thread, so touching the shell is
 /// safe. If nothing ever prints under ZFD_DEBUG when you drag files in, GLFW isn't
 /// receiving the XDND drop at all (e.g. a Wayland source into our XWayland window).
@@ -214,7 +214,7 @@ fn dropCallback(win: ?*c.GLFWwindow, count: c_int, paths: [*c][*c]const u8) call
 }
 
 /// pickDropCallback: a file dropped onto the Save/Open chooser is a way of POINTING at
-/// it, not of importing it — so instead of copying (the browser's drop), jump to the
+/// it, not of importing it, so instead of copying (the browser's drop), jump to the
 /// dropped item: a folder is opened; a file's folder is opened with the file selected,
 /// and in a Save dialog its name also becomes the Name (drop the file you want to
 /// overwrite). Only the first item counts; the chooser picks within one folder.
@@ -320,7 +320,7 @@ pub fn runPick(alloc: std.mem.Allocator, io: std.Io, trash_home: []const u8, hom
         }
     }
 
-    // Persist UI prefs (zoom, view toggles, sidebar) for next time — but keep the
+    // Persist UI prefs (zoom, view toggles, sidebar) for next time, but keep the
     // standalone browser's remembered folder and window size: the chooser opens at a
     // portal-specified folder in its own window, neither of which should hijack the
     // main browser's resume state. (Copy the dir out first: the struct assignment
@@ -413,7 +413,7 @@ const Backend = struct {
         c.igStyleColorsDark(null);
         theme.applyMetrics();
         theme.apply(true); // the shell switches to the chosen/system theme on its first frame
-        // Our layout-aware zoom key callback — set BEFORE ImGui installs its callbacks
+        // Our layout-aware zoom key callback: set BEFORE ImGui installs its callbacks
         // (install_callbacks=true) so ImGui chains to it instead of replacing it.
         _ = c.glfwSetKeyCallback(window, keyCallback);
         if (!c.ImGui_ImplGlfw_InitForOpenGL(window, true)) return error.ImGuiGlfwInit;

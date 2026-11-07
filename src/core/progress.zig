@@ -2,7 +2,7 @@
 //! cell an off-thread worker updates (files/bytes done, current item) and honors for
 //! cancellation, while the render thread displays a bar and can request a cancel.
 //!
-//! It's GUI-free and pure (goal 2) — the op-runner owns one, fsops reports into it,
+//! It's GUI-free and pure (goal 2): the op-runner owns one, fsops reports into it,
 //! the shell draws it. Cancellation is *cooperative*: the worker calls `canceled()`
 //! at safe points (between files, between copy chunks) and unwinds with
 //! `error.Canceled`. Numeric fields are atomics (a hot path: bytes tick per chunk);
@@ -99,7 +99,7 @@ pub const Progress = struct {
         _ = self.files_done.fetchAdd(1, .monotonic);
     }
 
-    /// canceled reports whether a cancel has been requested — the worker checks this
+    /// canceled reports whether a cancel has been requested; the worker checks this
     /// between files and between copy chunks and unwinds with error.Canceled.
     pub fn canceled(self: *Progress) bool {
         return self.cancel_flag.load(.monotonic);

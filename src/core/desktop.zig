@@ -1,7 +1,7 @@
 //! Freedesktop `.desktop` application entries, for the "Open with…" picker. We scan
 //! the standard applications dirs, parse Name/Exec, and build an argv (expanding the
 //! Exec field codes) to launch an app on a file. Pure parsing/argv logic is
-//! unit-tested; the scan + spawn do I/O. No GLib/GIO linking — this is ZFD's answer
+//! unit-tested; the scan + spawn do I/O. No GLib/GIO linking: this is ZFD's answer
 //! to Go's internal/desktop (goal 5: shell out / read files, don't link a toolkit).
 
 const std = @import("std");
@@ -15,7 +15,7 @@ pub const App = struct {
     mimes: []u8 = &.{}, // raw MimeType= value, ';'-separated (owned)
 
     /// handles reports whether the app declares `mime` (or its "type/*" family) in
-    /// MimeType= — the Open-with picker lists those first as recommended.
+    /// MimeType=; the Open-with picker lists those first as recommended.
     pub fn handles(self: App, mime: []const u8) bool {
         if (mime.len == 0) return false;
         const slash = std.mem.indexOfScalar(u8, mime, '/') orelse mime.len;
@@ -116,7 +116,7 @@ pub fn launch(io: std.Io, alloc: std.mem.Allocator, exec: []const u8, path: []co
 /// first (user, system, local). This is the ONE definition of "which apps we consider",
 /// shared with mimeinfo so the Open-with picker and the "Opens with"/Type columns agree.
 /// Deliberately NOT $XDG_DATA_DIRS-derived: that would pull in flatpak/snap export dirs,
-/// which we don't surface. Owned — free each element and the slice.
+/// which we don't surface. Owned: free each element and the slice.
 pub fn appDirs(alloc: std.mem.Allocator, home: []const u8) ![][]const u8 {
     var dirs = std.ArrayList([]const u8).empty;
     errdefer {

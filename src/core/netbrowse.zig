@@ -1,6 +1,6 @@
 //! The servers on the local network, for the Network page: what `avahi-browse -t -r
 //! -p -a` (mDNS / DNS-SD, as Finder's Bonjour) finds offering a file service ZFD can
-//! connect to — SMB, SFTP/SSH, WebDAV, FTP. avahi reports each service once per
+//! connect to: SMB, SFTP/SSH, WebDAV, FTP. avahi reports each service once per
 //! network interface and IP version; they're merged into one server, keeping the
 //! address on the most ordinary interface (wired or wireless LAN before VPNs, and
 //! container bridges last) and IPv4 over IPv6 (a link-local one needs its interface

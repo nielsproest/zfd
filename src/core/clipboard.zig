@@ -1,6 +1,6 @@
 //! The file clipboard: a set of absolute paths plus whether they were copied or
 //! cut (Ctrl+C / Ctrl+X). Paste consults `mode` to decide copy vs move. Pure
-//! state — the actual copy/move runs off-thread via the op-runner. GUI-free and
+//! state; the actual copy/move runs off-thread via the op-runner. GUI-free and
 //! tested.
 
 const std = @import("std");
@@ -24,7 +24,7 @@ pub const Clipboard = struct {
     }
 
     /// setOwned replaces the clipboard, TAKING OWNERSHIP of `paths` (its strings and
-    /// the outer slice) rather than copying — for callers that already hold owned paths
+    /// the outer slice) rather than copying, for callers that already hold owned paths
     /// (e.g. Browser.selectedPaths), so cut/copy doesn't dupe them a second time.
     pub fn setOwned(self: *Clipboard, alloc: std.mem.Allocator, paths: [][]u8, mode: Mode) !void {
         self.clearPaths(alloc);

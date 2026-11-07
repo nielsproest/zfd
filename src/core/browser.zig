@@ -1,6 +1,6 @@
 //! Browser: the navigation model the UI draws and drives. It owns the current
 //! directory, the current listing, and the off-thread Scanner. Navigation is
-//! always async — `navigate`/`up`/`open` just kick the Scanner; `update` (called
+//! always async: `navigate`/`up`/`open` just kick the Scanner; `update` (called
 //! once per frame on the render thread) folds in a finished listing without ever
 //! blocking. GUI-free and testable.
 //!
@@ -138,7 +138,7 @@ pub const Browser = struct {
     expanded: std.ArrayList([]u8) = .empty,
     // Opened folders are read off the render thread, one at a time, on their own
     // scanner (started on first use): the queue of ones still to read, and the one
-    // being read (a result for anything else — closed, or a folder left — is dropped).
+    // being read (a result for anything else (closed, or a folder left) is dropped).
     exp_scanner: ?Scanner = null,
     exp_queue: std.ArrayList([]u8) = .empty, // relative names (owned), oldest first
     exp_inflight: ?[]u8 = null, // owned
@@ -167,7 +167,7 @@ pub const Browser = struct {
     reloading: bool = false, // the pending scan re-reads the SAME dir (keep the selection)
     // Opt-in subfolder search. OFF by default and switched off on every navigation: the
     // normal quick-search only filters what's listed (instant, no I/O), whereas this
-    // walks the tree — so it only ever runs while the user has it turned on.
+    // walks the tree, so it only ever runs while the user has it turned on.
     deep: bool = false,
     // Showing the Recent place: `dir` is "/" and entry names are paths relative to it
     // (see recent.zig), so joins still yield real paths; location() reports the URI.
@@ -330,7 +330,7 @@ pub const Browser = struct {
 
     /// setSort applies an explicit column/direction (from the table header) and
     /// re-sorts. The selection + cursor stay pinned to the same entries (by name), so
-    /// you can keep arrow-keying from what you clicked — like Explorer.
+    /// you can keep arrow-keying from what you clicked, like Explorer.
     pub fn setSort(self: *Browser, column: scan.SortColumn, ascending: bool) void {
         self.sort_order.column = column;
         self.sort_order.ascending = ascending; // keep dirs_first
@@ -713,7 +713,7 @@ pub const Browser = struct {
         self.foldDeep(true);
     }
 
-    /// foldDeep swaps the latest results in as the listing — at most ~5×/s while the
+    /// foldDeep swaps the latest results in as the listing, at most ~5×/s while the
     /// walk streams, so a big result set isn't re-sorted every frame.
     fn foldDeep(self: *Browser, force: bool) void {
         const d = self.deep_search orelse return;
@@ -760,7 +760,7 @@ pub const Browser = struct {
             for (l.entries, 0..) |e, i| {
                 if (!self.show_hidden and isHidden(std.fs.path.basename(e.name))) continue;
                 // Subfolder results were matched by the walk (against the NAME, while the
-                // entry is shown as a relative path) — re-filtering here would drop them.
+                // entry is shown as a relative path); re-filtering here would drop them.
                 if (self.deep_search == null and !q.isEmpty() and !q.matches(e, self.search_ci)) continue;
                 if (self.tag_filter != 0 and e.tags & self.tag_filter == 0) continue;
                 // The chooser file-type filter hides non-matching FILES; directories
@@ -794,7 +794,7 @@ pub const Browser = struct {
     }
 
     /// rebuildViewPreserving re-sorts/re-filters the SAME listing while keeping the
-    /// selection and keyboard cursor pinned to the same entries BY NAME — like Explorer,
+    /// selection and keyboard cursor pinned to the same entries BY NAME, like Explorer,
     /// where changing the sort keeps what you had selected so the arrow keys keep moving
     /// from it. Entries the new filter hides simply fall out of the selection. Only valid
     /// when the listing is unchanged (a sort or filter toggle): the view indices read
@@ -802,7 +802,7 @@ pub const Browser = struct {
     /// it uses the plain rebuildView instead.
     fn rebuildViewPreserving(self: *Browser) void {
         if (self.listing == null) return self.rebuildView();
-        // A just-created New Folder/File wants the cursor for inline rename — let that
+        // A just-created New Folder/File wants the cursor for inline rename; let that
         // win rather than pinning to the old cursor.
         if (self.rename_after_reload != null) return self.rebuildView();
         var snap = self.snapSelection();
@@ -833,7 +833,7 @@ pub const Browser = struct {
     }
 
     /// restoreSelection re-selects surviving entries by name and puts the cursor back
-    /// on its entry. `reveal` scrolls to it (a sort change) — a background reload must
+    /// on its entry. `reveal` scrolls to it (a sort change); a background reload must
     /// not yank the list away from where the user is looking.
     fn restoreSelection(self: *Browser, sn: *const SelSnap, reveal: bool) void {
         var restored_cursor = false;
@@ -871,7 +871,7 @@ pub const Browser = struct {
     }
 
     /// setPendingSelect asks the browser to select + reveal the entry named `name` once
-    /// the (first) listing lands — how `zfd <file>` reveals a file inside its parent
+    /// the (first) listing lands: this is how `zfd <file>` reveals a file inside its parent
     /// folder ("show in folder"). Owns its own copy.
     pub fn setPendingSelect(self: *Browser, name: []const u8) void {
         if (self.select_after_load) |old| self.alloc.free(old);
@@ -883,7 +883,7 @@ pub const Browser = struct {
     /// folder is still loading or errored (no listing yet).
     fn applyPendingSelect(self: *Browser) void {
         if (self.select_after_load == null) return;
-        if (self.listing == null) return; // no listing yet — try again on the next rebuild
+        if (self.listing == null) return; // no listing yet; try again on the next rebuild
         const target = self.select_after_load.?;
         defer {
             self.alloc.free(target);
@@ -899,7 +899,7 @@ pub const Browser = struct {
         }
     }
 
-    /// requestRename asks the table to enter inline-rename on the cursor — used by the
+    /// requestRename asks the table to enter inline-rename on the cursor, used by the
     /// shared context menu so Rename works from any view (the table does the edit).
     pub fn requestRename(self: *Browser) void {
         self.want_rename = true;
@@ -927,7 +927,7 @@ pub const Browser = struct {
         return r;
     }
 
-    /// goTo switches to `path` (absolute) and starts an async scan — the raw
+    /// goTo switches to `path` (absolute) and starts an async scan: the raw
     /// navigation, without touching history (used by back/forward).
     fn goTo(self: *Browser, path: []const u8) !void {
         const virtual = recent.isUri(path);
@@ -939,7 +939,7 @@ pub const Browser = struct {
         self.dir = dup;
         self.loading = true;
         self.err_name = null;
-        // A quick-search glob belongs to the folder you ran it in — carrying it into the
+        // A quick-search glob belongs to the folder you ran it in; carrying it into the
         // next directory silently hides files there. Clear it on every real navigation
         // (back/forward/up/open all route through goTo); refresh() reloads the same dir
         // without goTo, so it keeps the filter. The toolbar re-syncs its box from this on
@@ -1040,7 +1040,7 @@ pub const Browser = struct {
         self.goTo(self.history.items[self.hist_pos]) catch {};
     }
     /// backOrUp goes back in history if there's anywhere to go back to, otherwise it
-    /// climbs to the parent directory — so a Back input (the mouse thumb button) always
+    /// climbs to the parent directory, so a Back input (the mouse thumb button) always
     /// does something instead of dead-ending the moment you open a folder with no
     /// history yet. The parent is prepended (cursor stays at 0) so repeated Back keeps
     /// walking up toward the root, while Forward re-descends into where you came from.
@@ -1075,7 +1075,7 @@ pub const Browser = struct {
     }
     /// canBackOrUp reports whether backOrUp would move: there's history to go back to, or
     /// the current dir has a parent to climb to. False only at the filesystem root with
-    /// no history — the one spot Back genuinely can't do anything.
+    /// no history: the one spot Back genuinely can't do anything.
     pub fn canBackOrUp(self: *const Browser) bool {
         return self.hist_pos > 0 or std.fs.path.dirname(self.dir) != null;
     }
@@ -1341,7 +1341,7 @@ pub const Browser = struct {
         return self.usage_canceled;
     }
 
-    /// resetUsage forces a fresh treemap scan of the current dir — used when the user
+    /// resetUsage forces a fresh treemap scan of the current dir, used when the user
     /// re-opens the treemap after canceling it (ensureUsage otherwise sees the dir as
     /// already scanned and won't restart).
     pub fn resetUsage(self: *Browser) void {
@@ -1374,7 +1374,7 @@ pub const Browser = struct {
     }
 
     /// selectionTagged reports how many of the selected items carry colour `bit`, and
-    /// how many are selected — so the menu can show a tag as on (all), off, or mixed.
+    /// how many are selected, so the menu can show a tag as on (all), off, or mixed.
     pub fn selectionTagged(self: *Browser, bit: tags.Mask) struct { with: usize, of: usize } {
         var with: usize = 0;
         var of: usize = 0;
@@ -1427,7 +1427,7 @@ pub const Browser = struct {
         return self.apps.?;
     }
 
-    /// cursorMime is the MIME type of the cursor's entry ("" if unknown) — the
+    /// cursorMime is the MIME type of the cursor's entry ("" if unknown). The
     /// Open-with picker recommends the apps that declare it.
     pub fn cursorMime(self: *Browser) []const u8 {
         if (self.sel.cursor >= self.count()) return "";
@@ -1642,7 +1642,7 @@ pub const Browser = struct {
                 self.ops.submit(.{ .restore = .{ .pairs = pairs } }) catch {};
             },
             .copy => |cp| {
-                // Undoing a copy removes the copies — via the trash, not a permanent
+                // Undoing a copy removes the copies, via the trash, not a permanent
                 // delete, so a mistaken Ctrl+Z is itself recoverable.
                 const th = self.alloc.dupe(u8, self.trash_home) catch return;
                 const paths = self.alloc.alloc([]u8, cp.pairs.len) catch {
@@ -1659,7 +1659,7 @@ pub const Browser = struct {
             },
         }
         // No refresh here: rename/delete/restore/trash-a-copy run on the op worker and
-        // reload the folder when they finish. Rescanning NOW would race the worker —
+        // reload the folder when they finish. Rescanning NOW would race the worker:
         // readdir during a rename can list both names. (The inline trash restore above
         // refreshes itself.)
         self.clearUndo();
@@ -1696,7 +1696,7 @@ pub const Browser = struct {
             .move, .copy => {
                 self.clearUndo();
                 self.clearRedo();
-                // (no pairs: nothing to reverse — all skipped, or merged)
+                // (no pairs: nothing to reverse: all skipped, or merged)
                 self.undo_action = if (comp.pairs.len == 0) .none else if (comp.kind == .move) .{ .move = .{ .pairs = comp.pairs } } else .{ .copy = .{ .pairs = comp.pairs } };
                 if (comp.pairs.len == 0) comp.deinit(self.alloc);
             },
@@ -1750,7 +1750,7 @@ pub const Browser = struct {
         self.undo_action = .{ .trash = .{ .origs = origs.toOwnedSlice(self.alloc) catch &.{} } };
     }
 
-    /// isCut reports whether view row `i` is on the clipboard for a MOVE (Ctrl+X) —
+    /// isCut reports whether view row `i` is on the clipboard for a MOVE (Ctrl+X):
     /// the table draws those faded, like cut text in an editor. Called for every visible
     /// row each frame, so it compares path COMPONENTS (basename first, which usually
     /// mismatches and short-circuits) instead of formatting a full path per row.
@@ -1764,7 +1764,7 @@ pub const Browser = struct {
         return false;
     }
 
-    /// selectionSize sums the (shallow) sizes of the selected entries — for the
+    /// selectionSize sums the (shallow) sizes of the selected entries, for the
     /// status bar's "N selected (X MB)" like Explorer. Directories count as 0.
     pub fn selectionSize(self: *Browser) u64 {
         var total: u64 = 0;
@@ -1786,7 +1786,7 @@ pub const Browser = struct {
         self.ops.cancelAll();
     }
 
-    /// usageSizeOf is the recursive size for a child by name (0 until computed) — so
+    /// usageSizeOf is the recursive size for a child by name (0 until computed), so
     /// the treemap can size the SAME view entries the table shows (shared model).
     pub fn usageSizeOf(self: *const Browser, name: []const u8) u64 {
         if (self.usage_snapshot) |s| {
@@ -1834,7 +1834,7 @@ pub const Browser = struct {
     }
 
     /// pasteInto is the shared engine: copy (or move, if cut) the clipboard paths into
-    /// `dst_dir` (borrowed — duped here for the off-thread job). A cut clears the
+    /// `dst_dir` (borrowed; duped here for the off-thread job). A cut clears the
     /// clipboard once queued.
     pub fn pasteInto(self: *Browser, dst_dir: []const u8) void {
         if (self.clipboard.isEmpty()) return;
@@ -1891,7 +1891,7 @@ pub const Browser = struct {
     }
 
     /// trashPaths moves the given absolute paths to the XDG home trash (off-thread),
-    /// recording them for undo. Takes borrowed paths — the drag snapshot outlives the
+    /// recording them for undo. Takes borrowed paths; the drag snapshot outlives the
     /// drop, so it can't hand ownership to the job.
     pub fn trashPaths(self: *Browser, paths: []const []const u8) void {
         if (paths.len == 0) return;
@@ -1938,7 +1938,7 @@ pub const Browser = struct {
     }
 
     /// queueExternalDrop records files dropped from another app (owned) plus the drop's
-    /// window position, so the view can resolve WHERE they landed on the next frame —
+    /// window position, so the view can resolve WHERE they landed on the next frame:
     /// onto a folder row (import into it) or anywhere else (import into the current dir).
     /// A second drop before the first resolves supersedes it.
     pub fn queueExternalDrop(self: *Browser, srcs: [][]u8, x: f32, y: f32) void {
@@ -1946,7 +1946,7 @@ pub const Browser = struct {
         self.drop_pending = .{ .srcs = srcs, .x = x, .y = y };
     }
 
-    /// pendingDropPos returns the queued drop's window position, if any — the view uses
+    /// pendingDropPos returns the queued drop's window position, if any; the view uses
     /// it to hit-test folder rows.
     pub fn pendingDropPos(self: *const Browser) ?[2]f32 {
         const d = self.drop_pending orelse return null;
@@ -1955,7 +1955,7 @@ pub const Browser = struct {
 
     /// commitExternalDrop copies the queued drop's files into dst_dir (off-thread) and
     /// clears the pending state. Called by the view once it has resolved the target.
-    /// External sources are always COPIED — we can't know whether the other app still
+    /// External sources are always COPIED: we can't know whether the other app still
     /// needs them, and GLFW doesn't surface the XDND action.
     ///
     /// Drops that would recurse are filtered out: another ZFD window (or any file
@@ -1999,7 +1999,7 @@ pub const Browser = struct {
     // A drag carries a SNAPSHOT of the dragged paths, taken when the drag starts, not
     // the live selection: the view's row indices are only meaningful for one listing,
     // and a background rescan (inotify-less refresh, a finished file op, a sort change)
-    // can re-index the view mid-drag — which used to move whatever rows happened to
+    // can re-index the view mid-drag, which used to move whatever rows happened to
     // land on those indices at drop time. Paths are stable; indices are not.
 
     /// beginDrag snapshots the current selection's absolute paths as the dragged set.
@@ -2027,7 +2027,7 @@ pub const Browser = struct {
     /// submitTransfer queues a copy/move of `srcs` (owned; consumed) into dst_dir. If
     /// any item's name is already taken there, the transfer is parked instead and the
     /// view asks what to do (see conflictInfo / resolveConflict). Copying an item into
-    /// its own folder is never a conflict — that is always "make a copy".
+    /// its own folder is never a conflict: that is always "make a copy".
     pub fn submitTransfer(self: *Browser, srcs: [][]u8, dst_dir: []const u8, copy: bool) void {
         var clashes = std.ArrayList(Clash).empty;
         var buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -2233,13 +2233,13 @@ pub const Browser = struct {
         return list.toOwnedSlice(self.alloc);
     }
 
-    /// hasArchiveTool reports whether bsdtar was found — gates the archive menu.
+    /// hasArchiveTool reports whether bsdtar was found; it gates the archive menu.
     pub fn hasArchiveTool(self: *const Browser) bool {
         return self.archive_tool != null;
     }
 
     /// selectionAllArchives is true when at least one row is selected and EVERY selected
-    /// row is an archive file — the condition for showing the Extract items.
+    /// row is an archive file: the condition for showing the Extract items.
     pub fn selectionAllArchives(self: *Browser) bool {
         var any = false;
         var i: usize = 0;
@@ -2361,7 +2361,7 @@ pub const Browser = struct {
 
     /// watchDir points the inotify watch at `dir` (dropping the previous one). Only
     /// changes to the folder's own entries matter: create/delete/rename, a file
-    /// finishing being written, metadata. IN_MODIFY is left out on purpose — a file
+    /// finishing being written, metadata. IN_MODIFY is left out on purpose: a file
     /// being written fires it thousands of times, and CLOSE_WRITE reports the end.
     fn watchDir(self: *Browser, dir: []const u8) void {
         self.watch_dirty_ns = 0;
@@ -2510,7 +2510,7 @@ pub const Browser = struct {
         self.applyPendingView();
         const old = self.listing;
         // A reload of the same folder (F5, a finished op, an external change) keeps
-        // what was selected — by name, since the entries are renumbered. A
+        // what was selected, by name, since the entries are renumbered. A
         // newly-created entry's rename or a reveal still takes the cursor.
         const keep = self.reloading and old != null and
             self.rename_after_reload == null and self.select_after_load == null;
@@ -2692,7 +2692,7 @@ fn monoNs() u64 {
 }
 
 /// copyInto memcpys `src` into `buf` (truncating to buf.len) and returns the written
-/// slice — a tiny helper for building a menu/name string in a caller-owned buffer.
+/// slice. A tiny helper for building a menu/name string in a caller-owned buffer.
 fn copyInto(buf: []u8, src: []const u8) []const u8 {
     const n = @min(src.len, buf.len);
     @memcpy(buf[0..n], src[0..n]);
@@ -2728,7 +2728,7 @@ fn isHidden(name: []const u8) bool {
     return name.len > 0 and name[0] == '.';
 }
 
-/// isSelfOrDescendant reports whether dst is src itself or a path under it — the
+/// isSelfOrDescendant reports whether dst is src itself or a path under it: the
 /// case where moving/copying src into dst would recurse into what we're creating.
 fn isSelfOrDescendant(dst: []const u8, src: []const u8) bool {
     if (std.mem.eql(u8, dst, src)) return true;
@@ -2974,7 +2974,7 @@ test "a drag carries a snapshot of paths, not live row indices" {
     try testing.expectEqual(@as(usize, 1), b.dragPaths().len);
 
     // Now the selection moves (a background rescan, a keyboard nudge, another view
-    // acting on the model — anything that re-points row indices mid-drag). The drop
+    // acting on the model: anything that re-points row indices mid-drag). The drop
     // must still act on what the user picked up, not on what index 1 means now.
     b.sel.click(2); // c.txt
     b.dropDraggedInto(b.dragPaths(), dest, false); // move
@@ -3005,7 +3005,7 @@ test "dropDraggedInto refuses a folder dropped onto itself or its own descendant
     defer b.deinit();
     try waitLoaded(b);
 
-    // Dragging "outer" into itself, and into its own child, are both no-ops — either
+    // Dragging "outer" into itself, and into its own child, are both no-ops: either
     // one would otherwise recurse forever while copying.
     b.dropDraggedInto(&.{outer}, outer, true);
     b.dropDraggedInto(&.{outer}, inner, true);
@@ -3155,7 +3155,7 @@ test "browser surfaces a scan error for a missing directory" {
 
 // ---------------------------------------------------------------------------
 // File-operation tests. These drive real (off-thread) ops against a temp dir,
-// so each asserts a before-state and an after-state that DIFFER — proving the op
+// so each asserts a before-state and an after-state that DIFFER, proving the op
 // actually changed the filesystem, not just that a post-condition happened to hold.
 
 // indexOf finds the view row with the given name (post-filter/sort), or null.
@@ -3168,7 +3168,7 @@ fn indexOf(b: *Browser, name: []const u8) ?usize {
 }
 
 // waitSettled spins update() until the directory reflects the expected presence of
-// `name` and no scan is in flight — robust to ops that refresh more than once (undo
+// `name` and no scan is in flight, robust to ops that refresh more than once (undo
 // kicks an async op AND an immediate refresh, so a single reload cycle isn't enough).
 /// waitOps lets the file ops finish and their completions be taken.
 fn waitOps(b: *Browser) !void {
@@ -3198,7 +3198,7 @@ test "newFolder creates a directory and arms inline-rename on it" {
     var tmp = testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
     // An existing directory "AAA" sorts before "New Folder" (default sort is dirs-first,
-    // then by name), so the new folder lands at index 1 — asserting the cursor moved
+    // then by name), so the new folder lands at index 1; asserting the cursor moved
     // there then proves a real move off the default row 0 (index 0 would pass even if
     // applyPendingRename never touched the cursor).
     try tmp.dir.createDirPath(io, "AAA");
@@ -3580,7 +3580,7 @@ test "a file created by another program appears without a manual refresh" {
     b.sel.click(indexOf(b, "old.txt").?);
     try tmp.dir.writeFile(io, .{ .sub_path = "new.txt", .data = "x" });
 
-    try waitSettled(b, "new.txt", true); // only update() is called — the watch did the rest
+    try waitSettled(b, "new.txt", true); // only update() is called; the watch did the rest
     // The reload kept the selection on old.txt (by name, though rows were renumbered).
     try testing.expect(b.sel.isSelected(indexOf(b, "old.txt").?));
     try testing.expect(!b.sel.isSelected(indexOf(b, "new.txt").?));
@@ -3622,7 +3622,7 @@ test "subfolder search is opt-in, finds nested matches, and switches off on navi
     defer b.deinit();
     try waitLoaded(b);
 
-    // Default: the quick-search only filters this folder — the nested file isn't found.
+    // Default: the quick-search only filters this folder; the nested file isn't found.
     b.setSearch("note");
     try testing.expect(!b.deep);
     try testing.expect(indexOf(b, "top-note.txt") != null);

@@ -1,7 +1,7 @@
 //! Table representation of a Browser: a sortable Name/Size/Date grid with
 //! click/Ctrl/Shift selection, Up/Down/Enter/Backspace navigation, clipboard
 //! shortcuts (Ctrl+C/X/V), Delete-to-trash, and F2 inline rename. One of several
-//! content views over the same browser model (see ../shell.zig) — a treemap and
+//! content views over the same browser model (see ../shell.zig); a treemap and
 //! icon grid are future siblings. Disk work is off-thread (Scanner/OpRunner); this
 //! only reads state and calls model methods. Keep drawn strings ASCII.
 
@@ -19,7 +19,7 @@ const Browser = core.browser.Browser;
 const ViewActions = actions.ViewActions;
 
 // Dummy payload byte for internal drag-and-drop; the real dragged set is the
-// snapshot the Browser takes at drag start (b.beginDrag / b.dragPaths) — passing
+// snapshot the Browser takes at drag start (b.beginDrag / b.dragPaths). Passing
 // pointers through ImGui's memcpy'd payload would be unsafe, and the *selection*
 // can't be read at drop time either: it is indexed by view row, and a rescan
 // landing mid-drag re-indexes the view under us.
@@ -51,7 +51,7 @@ pub const TableView = struct {
         // renaming immediately.
         if (b.takeWantRename() and b.count() > 0) self.beginRename(b, b.sel.cursor);
         // Suppress list keyboard handling (esp. the type-ahead, which reads the input
-        // queue directly) while a popup/modal is open — else typing in the Open-with
+        // queue directly) while a popup/modal is open, else typing in the Open-with
         // search would also drive the file list underneath.
         const popup_open = c.igIsPopupOpen_Str(null, c.ImGuiPopupFlags_AnyPopup);
         if (keyboard and !popup_open and self.renaming == null) {
@@ -61,7 +61,7 @@ pub const TableView = struct {
         }
         // The scroll-to-reveal signal lives on the shared Selection, so ANY view
         // (keyboard nav, type-ahead, the treemap) can move the cursor and the file
-        // list follows — not a table-local flag.
+        // list follows; not a table-local flag.
         self.drawTable(b, act, b.sel.takeReveal(), list_height);
         self.listDropTarget(b, act);
     }
@@ -142,9 +142,9 @@ pub const TableView = struct {
     }
 
     /// listDropTarget makes the list's empty space a drop target: into THIS folder.
-    /// Registered after the rows on purpose — ImGui gives a drop to the smallest hovered
+    /// Registered after the rows on purpose: ImGui gives a drop to the smallest hovered
     /// target, so a folder row under the pointer still wins and only the gaps fall
-    /// through to here — and after EndTable, because inside the table the clip rect is
+    /// through to here), and after EndTable, because inside the table the clip rect is
     /// the last column's, which would shrink the hover area to a sliver. Dropping rows
     /// back into their own folder is a no-op (dropDraggedInto skips items already
     /// there); from another tab or the split pane it moves them in.
@@ -219,7 +219,7 @@ pub const TableView = struct {
         c.igTableSetupColumn("Size", c.ImGuiTableColumnFlags_WidthFixed | c.ImGuiTableColumnFlags_PreferSortDescending, @round(em * 5.5), 0);
         c.igTableSetupColumn("Kind", c.ImGuiTableColumnFlags_WidthFixed, @round(em * 7), 0);
         c.igTableSetupColumn("Date Modified", c.ImGuiTableColumnFlags_WidthFixed, @round(em * 11), 0);
-        // Extra columns, hidden by default — enable via the header's right-click menu
+        // Extra columns, hidden by default; enable via the header's right-click menu
         // (visibility persists in imgui.ini). All sortable; data is free from statx.
         const hide: c_int = c.ImGuiTableColumnFlags_WidthFixed | c.ImGuiTableColumnFlags_DefaultHide;
         c.igTableSetupColumn("Date Created", hide, @round(em * 11), 0);
@@ -242,10 +242,10 @@ pub const TableView = struct {
         c.igPopStyleColor(1);
 
         // The browser owns the sort order (restored from settings, per tab), so push it
-        // into the header when this table starts showing a browser — otherwise the
+        // into the header when this table starts showing a browser; otherwise the
         // header's own default (Name ascending) would be read back as a click and
         // overwrite it. After that, header clicks flow the other way.
-        // The same goes for a sort the model changed itself — entering a folder with
+        // The same goes for a sort the model changed itself: entering a folder with
         // its own remembered view.
         const so = b.sort_order;
         if (self.sort_synced != @intFromPtr(b) or so.column != self.sort_shown.column or so.ascending != self.sort_shown.ascending) {
@@ -256,7 +256,7 @@ pub const TableView = struct {
 
         // Drag auto-scroll: holding a drag near the top or bottom edge of the list
         // scrolls it, so a folder further down the directory is reachable at all. Without
-        // it a drop target simply had to already be on screen — in a folder of any size
+        // it a drop target simply had to already be on screen, and in a folder of any size
         // that made drag-to-move useless. Speed ramps up the deeper into the edge band
         // the pointer sits, the way Explorer's does.
         if (c.igIsDragDropActive()) {
@@ -281,7 +281,7 @@ pub const TableView = struct {
         const row_off = @round((row_h - line_h) * 0.5);
         const row_min = row_h + c.igGetStyle().*.CellPadding.y * 2;
         // ListClipper: submit only the visible rows so huge directories stay smooth.
-        // Accessed via opaque handle + a two-field mirror (see cimgui.zig) — no shim.
+        // Accessed via opaque handle + a two-field mirror (see cimgui.zig), no shim.
         // The +1 is the trailing empty row; include the reveal target so scroll-to
         // works even when the cursor is off-screen.
         // With Use Groups on, a heading row starts each section: display rows are the
@@ -325,7 +325,7 @@ pub const TableView = struct {
                     // about to fill (rows span all columns, so only Y really matters). The
                     // old code tested igGetItemRect *after* submitting the Selectable, which
                     // meant the row's highlight was drawn from the just-cleared selection and
-                    // only caught up a frame later — the box looked like it selected nothing
+                    // only caught up a frame later: the box looked like it selected nothing
                     // until release. Selecting first makes the sweep live.
                     if (self.marquee_active) {
                         const rt = c.igGetCursorScreenPos();
@@ -349,7 +349,7 @@ pub const TableView = struct {
                     var dl_state: ?DownloadState = null;
                     var dl_x: f32 = 0;
                     var dl_y: f32 = 0;
-                    // A small type icon before the name, as in Finder's list — after a
+                    // A small type icon before the name, as in Finder's list, after a
                     // disclosure triangle (folders open in place) and the item's depth.
                     const icon_sz = row_h;
                     const row_pos = c.igGetCursorScreenPos();
@@ -413,7 +413,7 @@ pub const TableView = struct {
                     }
                     // Drop target: dropping onto a directory moves the dragged set into it
                     // (Ctrl = copy). Delivery gates it to the release frame. A folder that is
-                    // itself being dragged is not a target — accepting there would be a
+                    // itself being dragged is not a target: accepting there would be a
                     // move-into-self, which dropDraggedInto only silently discards.
                     if (e.isDir() and !isDragged(act, b.dir, e.name) and c.igBeginDragDropTarget()) {
                         const payload = c.igAcceptDragDropPayload(DRAG_PAYLOAD, 0);
@@ -510,7 +510,7 @@ pub const TableView = struct {
                 var date_buf: [40]u8 = undefined;
                 fitText(scan.formatDateFriendly(&date_buf, e.mtime_secs, now));
 
-                // Optional columns — TableSetColumnIndex returns false when hidden, so we
+                // Optional columns: TableSetColumnIndex returns false when hidden, so we
                 // only format (and, for Owner/Group, look up) what's actually visible.
                 if (cell(4, row_off)) { // Created
                     var tb: [40]u8 = undefined;
@@ -557,7 +557,7 @@ pub const TableView = struct {
 
         // Resolve a queued external drop: into the folder row it landed on, else into the
         // current directory (dropped on empty space / a file / the header). Only claim
-        // drops that actually landed INSIDE the list — one that hit the sidebar or the
+        // drops that actually landed INSIDE the list; one that hit the sidebar or the
         // tab strip belongs to that target, and the shell resolves it after the body is
         // drawn (falling back to the current dir if nothing claimed it). Without this
         // the table swallowed every drop, so dropping a file on a bookmark or another
@@ -599,7 +599,7 @@ pub const TableView = struct {
         var stem: c_int = if (self.rename_select) @intCast(core_len) else -1;
         // Reject an invalid leaf up front ('/' would silently turn the rename into a move,
         // "."/".." are reserved). Tint the text red while it's bad (read from the buffer as
-        // it stands at frame start — a 1-frame lag on the tint is invisible) and explain in
+        // it stands at frame start; a 1-frame lag on the tint is invisible) and explain in
         // a hover tooltip; the commit below is blocked to match.
         const bad = core.fsops.invalidNameReason(std.mem.trim(u8, name, " \t"));
         if (bad != null) c.igPushStyleColor_Vec4(c.ImGuiCol_Text, theme.err());
@@ -692,7 +692,7 @@ fn handleNav(b: *Browser, act: *ViewActions) bool {
     }
     if (c.igIsKeyPressed_Bool(c.ImGuiKey_Enter, false) and !c.igIsKeyDown_Nil(c.ImGuiMod_Alt)) act.openCursor(b);
     if (!c.igIsKeyDown_Nil(c.ImGuiMod_Ctrl) and c.igIsKeyPressed_Bool(c.ImGuiKey_Backspace, false)) b.backOrUp(); // history back, else parent
-    // Right opens the folder under the cursor in place, Left closes it — or, on an
+    // Right opens the folder under the cursor in place, Left closes it, or, on an
     // item inside an opened folder, steps out to that folder (Finder's list keys).
     const alt = c.igIsKeyDown_Nil(c.ImGuiMod_Alt);
     if (!alt and b.canExpand() and b.sel.cursor < b.count()) {
@@ -711,7 +711,7 @@ fn handleNav(b: *Browser, act: *ViewActions) bool {
 }
 
 /// joinPath writes "<dir>/<name>" into buf, collapsing the separator when dir already
-/// ends in one (dir == "/" is the case that produced "//name" — a path that compares
+/// ends in one (dir == "/" is the case that produced "//name": a path that compares
 /// unequal to the same file reached any other way, so the drop-into-self and
 /// already-in-this-folder guards both missed it).
 pub fn joinPath(buf: []u8, dir: []const u8, name: []const u8) ?[]const u8 {
@@ -720,7 +720,7 @@ pub fn joinPath(buf: []u8, dir: []const u8, name: []const u8) ?[]const u8 {
     return std.mem.print(buf, "{s}{s}{s}", .{ d, sep, name }) catch null;
 }
 
-/// isDragged reports whether <dir>/<name> is one of the items in the live drag — used
+/// isDragged reports whether <dir>/<name> is one of the items in the live drag; used
 /// to refuse a folder as a drop target while it is itself being dragged.
 pub fn isDragged(act: *const ViewActions, dir: []const u8, name: []const u8) bool {
     const src = act.dragSource(c.igGetDragDropPayload()) orelse return false;

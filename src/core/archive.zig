@@ -1,5 +1,5 @@
 //! Archive support: extract/compress via `bsdtar` (libarchive). We shell out rather
-//! than link libarchive — same philosophy as the terminal/xdg-open features (an
+//! than link libarchive; same philosophy as the terminal/xdg-open features (an
 //! optional CLI tool, feature hides when absent). bsdtar is one tool that reads zip,
 //! 7z, tar.*, rar, cpio, iso, … and writes zip/7z/tar.* by inferring the format from
 //! the output extension (`-a`). On Arch it's always present (libarchive is a pacman
@@ -23,7 +23,7 @@ pub const formats = [_]Format{
 
 // Extensions we treat as extractable archives (lowercased; matched case-insensitively).
 // The compound tar.* forms are handled by stripArchiveExt, but the single suffixes here
-// are what isArchive keys off — a bare ".gz"/".xz"/".zst" is a valid single-file stream
+// are what isArchive keys off: a bare ".gz"/".xz"/".zst" is a valid single-file stream
 // bsdtar can unpack too.
 const exts = [_][]const u8{
     ".zip",  ".7z",   ".rar", ".tar",  ".tgz", ".tbz", ".tbz2",
@@ -52,7 +52,7 @@ pub fn isArchive(name: []const u8) bool {
     return false;
 }
 
-/// stripArchiveExt returns `name` with its archive extension removed — the natural
+/// stripArchiveExt returns `name` with its archive extension removed: the natural
 /// name for an "extract to <folder>". Handles the compound tar forms:
 ///   photos.tar.gz → photos,  data.tar → data,  book.zip → book,  notes.txt → notes.txt
 pub fn stripArchiveExt(name: []const u8) []const u8 {
@@ -69,7 +69,7 @@ pub fn stripArchiveExt(name: []const u8) []const u8 {
     return base;
 }
 
-/// fileStem strips only the final extension — the name a new archive takes when you
+/// fileStem strips only the final extension: the name a new archive takes when you
 /// "Add to archive" a single file (photo.png → photo). A directory keeps its full name
 /// (handled by the caller), so this is file-only.
 pub fn fileStem(name: []const u8) []const u8 {
@@ -77,7 +77,7 @@ pub fn fileStem(name: []const u8) []const u8 {
     return if (dot == 0) name else name[0..dot];
 }
 
-/// getEnv borrows an environment variable via std.c.environ — neither std.posix.getenv
+/// getEnv borrows an environment variable via std.c.environ; neither std.posix.getenv
 /// nor std.process.getEnvVarOwned exists in this std, but libc is linked (same approach
 /// as fsops.getEnv).
 fn getEnv(name: []const u8) ?[]const u8 {
@@ -92,7 +92,7 @@ fn getEnv(name: []const u8) ?[]const u8 {
 }
 
 /// findTool probes PATH for `bsdtar` and returns its absolute path (owned by the
-/// caller), or null if it isn't installed — which hides the whole archive menu.
+/// caller), or null if it isn't installed, which hides the whole archive menu.
 pub fn findTool(io: std.Io, alloc: std.mem.Allocator) ?[]u8 {
     const path = getEnv("PATH") orelse return null;
     var it = std.mem.splitScalar(u8, path, ':');
@@ -208,7 +208,7 @@ pub fn compressInto(
 }
 
 /// runTool spawns argv (optionally in cwd), waits, and maps a non-zero/abnormal exit to
-/// error.ArchiveFailed. Inherits stdio — bsdtar's diagnostics go to the parent's stderr.
+/// error.ArchiveFailed. Inherits stdio: bsdtar's diagnostics go to the parent's stderr.
 fn runTool(io: std.Io, argv: []const []const u8, cwd: ?[]const u8) !void {
     const cwd_opt: std.process.Child.Cwd = if (cwd) |d| .{ .path = d } else .inherit;
     var child = std.process.spawn(io, .{ .argv = argv, .cwd = cwd_opt }) catch return error.ArchiveFailed;

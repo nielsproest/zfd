@@ -1,5 +1,5 @@
 //! Icon grid representation of a Browser (Finder's icon view): a wrapped grid of
-//! cells — a thumbnail for images, else a drawn folder/document icon — with the name
+//! cells (a thumbnail for images, else a drawn folder/document icon) with the name
 //! below. Selection, drag and drop, context menus, rename, type-ahead and the
 //! shortcuts behave exactly as in the table (they share the table's helpers and its
 //! rename/type-ahead state); only layout and arrow-key movement differ.

@@ -1,6 +1,6 @@
 //! Mounted removable/external volumes for the sidebar's Devices section, parsed
 //! from /proc/mounts (ported from GoFileDialog's mounts handling). We only surface
-//! user-relevant mountpoints — under /run/media, /media, or /mnt — not the dozens
+//! user-relevant mountpoints (under /run/media, /media, or /mnt), not the dozens
 //! of pseudo-filesystems. Pure parse (content in), so it's unit-tested; a thin
 //! `read` wrapper reads the real /proc/mounts.
 
@@ -32,7 +32,7 @@ pub fn parse(alloc: std.mem.Allocator, content: []const u8) ![]Mount {
         const mnt = unescape(mnt_raw, &buf);
         if (!isExternal(mnt)) continue;
         // Network shares (e.g. an NFS export mounted under /mnt) are surfaced by
-        // parseNetwork/readNetwork instead — skip them here so they don't appear
+        // parseNetwork/readNetwork instead; skip them here so they don't appear
         // twice in the sidebar's Devices section.
         if (isNetworkFs(fs)) continue;
 
@@ -46,7 +46,7 @@ pub fn parse(alloc: std.mem.Allocator, content: []const u8) ![]Mount {
 }
 
 /// readProcFile reads a /proc (or /sys) file whole. These report a size of 0, and
-/// Dir.readFileAlloc trusts the size — it returns nothing for them — so this reads
+/// Dir.readFileAlloc trusts the size (it returns nothing for them), so this reads
 /// until end of file instead. Owned; at most `limit` bytes.
 pub fn readProcFile(io: std.Io, alloc: std.mem.Allocator, path: []const u8, limit: usize) ![]u8 {
     var f = try std.Io.Dir.cwd().openFile(io, path, .{});
@@ -90,7 +90,7 @@ pub fn isNetworkFs(fs: []const u8) bool {
 }
 
 /// isBridgeMount reports whether a mount is a FUSE "bridge" that exposes virtual
-/// shares as SUBDIRECTORIES — GNOME's gvfs (/run/user/UID/gvfs) or KDE's kio-fuse
+/// shares as SUBDIRECTORIES: GNOME's gvfs (/run/user/UID/gvfs) or KDE's kio-fuse
 /// (/run/user/UID/kio-fuse-XXXX). We list their children as the network places.
 pub fn isBridgeMount(fs: []const u8, mnt: []const u8) bool {
     if (std.mem.eql(u8, fs, "fuse.gvfsd-fuse")) return true;
@@ -187,8 +187,8 @@ fn scanBridge(io: std.Io, alloc: std.mem.Allocator, list: *std.ArrayList(Mount),
 }
 
 /// readPlaces lists the immediate directory entries under the conventional external-
-/// mount roots — /mnt and /media directly, plus /run/media/<user>/ (the udisks layout)
-/// — as sidebar Devices shortcuts. This surfaces every mount target provisioned there
+/// mount roots (/mnt and /media directly, plus the udisks layout /run/media/<user>/)
+/// as sidebar Devices shortcuts. This surfaces every mount target provisioned there
 /// even when it isn't a distinct /proc/mounts line, so "everything in /mnt" shows up.
 /// `exclude` is the set of mountpoints already listed (real mounts) so we don't repeat
 /// them. Only readdir on the roots (never a descent), so it can't stall on a slow
@@ -292,7 +292,7 @@ test "parse keeps only external local mounts and decodes escapes" {
     const mounts = try parse(a, sample);
     defer free(a, mounts);
 
-    // The two external *local* mounts only — not proc/root/tmpfs, and not the NFS
+    // The two external *local* mounts only, not proc/root/tmpfs, and not the NFS
     // share (it belongs to parseNetwork, so it isn't listed twice in the sidebar).
     try testing.expectEqual(@as(usize, 2), mounts.len);
     try testing.expectEqualStrings("/run/media/user/My Disk", mounts[0].mountpoint); // \040 → space

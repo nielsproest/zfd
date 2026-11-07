@@ -19,7 +19,7 @@ extern "C" bool zfd_want_text_input(void) {
 }
 
 // zfd_mouse_wheel returns this frame's vertical wheel delta (ImGuiIO field, opaque to
-// Zig). For Ctrl+scroll zoom — layout-independent, unlike +/- physical keys.
+// Zig). For Ctrl+scroll zoom: layout-independent, unlike +/- physical keys.
 extern "C" float zfd_mouse_wheel(void) {
     return ImGui::GetIO().MouseWheel;
 }
@@ -33,7 +33,7 @@ extern "C" void zfd_free_ctrl_tab(void) {
 }
 
 // zfd_set_font_filter sets NEAREST (blocky, no smoothing) or LINEAR filtering on the
-// font atlas texture — the "Blocky font (no anti-aliasing)" toggle. In ImGui 1.92 the
+// font atlas texture, for the "Blocky font (no anti-aliasing)" toggle. In ImGui 1.92 the
 // backend manages the texture dynamically and re-creates it as LINEAR, so this must be
 // re-asserted every frame AFTER RenderDrawData. Restores the prior GL binding.
 extern "C" void zfd_set_font_filter(bool nearest) {
@@ -51,7 +51,7 @@ extern "C" void zfd_set_font_filter(bool nearest) {
 
 // We keep BOTH a smooth TTF and ImGui's built-in bitmap font (ProggyClean, 1-bit /
 // natively blocky) loaded, and switch io.FontDefault between them for the "Blocky
-// font (no anti-aliasing)" toggle — NEAREST filtering alone is invisible on an
+// font (no anti-aliasing)" toggle. NEAREST filtering alone is invisible on an
 // anti-aliased TTF at 1x, so the toggle has to change the actual font.
 static ImFont *g_ttf = nullptr;
 static ImFont *g_bitmap = nullptr;
@@ -68,7 +68,7 @@ static char g_ttf_path[1024] = {0}; // the loaded TTF, reused as the bitmap font
 // Extended-A/B/Additional (European + Vietnamese), Greek, Cyrillic, and the common
 // punctuation block (curly quotes, dashes, ellipsis). The array is static so it stays
 // valid until ImGui builds the atlas lazily at the first frame. (CJK/other scripts need
-// a dedicated fallback font merged in — a later refinement; most sans-serif system fonts
+// a dedicated fallback font merged in (a later refinement); most sans-serif system fonts
 // don't carry those glyphs anyway.)
 extern "C" bool zfd_load_font(const char *path, float size) {
     FILE *f = std::fopen(path, "rb");
@@ -95,7 +95,7 @@ extern "C" bool zfd_load_font(const char *path, float size) {
 extern "C" void zfd_add_default_font(void) {
     g_bitmap = ImGui::GetIO().Fonts->AddFontDefault();
     // The bitmap font only has Latin-1: anything past U+00FF (the "›" breadcrumb
-    // separator, "…", "—", curly quotes, and every non-Latin-1 filename) drew as "?".
+    // separator, "…", curly quotes, and every non-Latin-1 filename) drew as "?".
     // Merge the TTF into it as a fallback source, so the blocky font keeps its look
     // for ASCII and borrows the TTF's glyph only where it has none of its own.
     if (g_bitmap && g_ttf_path[0]) {

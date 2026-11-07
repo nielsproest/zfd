@@ -1,4 +1,4 @@
-//! Column (Miller) view, Finder's third layout: the path as side-by-side lists — a
+//! Column (Miller) view, Finder's third layout, shows the path as side-by-side lists: a
 //! few ancestor folders, the current folder, and on the right what the selected item
 //! holds (a folder's contents, or a file's details). The current folder's column is
 //! the browser's own list, so selection, drag and drop, menus, rename and every
@@ -28,10 +28,10 @@ pub const ColumnsView = struct {
     last_dir_hash: u64 = 0,
     // The folder the columns were last laid out for. While the browser loads a new
     // folder it still holds the old listing, so the old layout stays on screen until
-    // the new one is complete — otherwise the columns jump twice per step.
+    // the new one is complete; otherwise the columns jump twice per step.
     shown_dir: [std.fs.max_path_bytes]u8 = undefined,
     shown_dir_len: usize = 0,
-    // A click in a side column: go to nav_dir with nav_name selected — applied after
+    // A click in a side column: go to nav_dir with nav_name selected, applied after
     // the frame's columns are drawn, since navigating frees the b.dir they slice.
     nav_dir: [std.fs.max_path_bytes]u8 = undefined,
     nav_dir_len: usize = 0,

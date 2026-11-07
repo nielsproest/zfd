@@ -1,6 +1,6 @@
 # Maintainer: Niels <25662877+nielsproest@users.noreply.github.com>
 #
-# Local/dev PKGBUILD: it builds the repository two folders up — there is no
+# Local/dev PKGBUILD: it builds the repository two folders up; there is no
 # release tarball or git remote yet. Run `makepkg -f` from this folder
 # (packaging/arch), then `scp` the resulting zfd-*.pkg.tar.zst onto a machine and
 # `pacman -U` it.
@@ -46,7 +46,7 @@ optdepends=('xdg-utils: open files in their default app (xdg-open)'
 options=('!lto' '!debug') # Zig manages its own codegen/optimization flags
 # Post-install scriptlet: prints the one manual activation step (see below in
 # package()). Packaging the .portal file advertises the backend but does not make
-# xdg-desktop-portal route file dialogs to zfd — that's a per-user portals.conf
+# xdg-desktop-portal route file dialogs to zfd: that's a per-user portals.conf
 # choice we can't make from a package.
 install=zfd.install
 _dbusname=org.freedesktop.impl.portal.desktop.zfd
@@ -56,12 +56,12 @@ build() {
 	cd "$_repo"
 	# -Dcpu=baseline is REQUIRED for a distributable package: `zig build` otherwise
 	# defaults to the *build host's* native CPU and emits e.g. AVX-512, which SIGILLs
-	# ("illegal hardware instruction") on any machine lacking those instructions —
+	# ("illegal hardware instruction") on any machine lacking those instructions:
 	# the exact failure when scp'ing a binary built on an AVX-512 box to a laptop.
 	# baseline = the portable x86-64-v1 minimum; bump to x86_64_v3 if all targets are
 	# recent (2015+) and you want the extra vectorization.
 	#
-	# ReleaseSafe: optimized but keeps Zig's safety checks — the sane default for a
+	# ReleaseSafe: optimized but keeps Zig's safety checks, the sane default for a
 	# desktop app. Switch to ReleaseFast for maximum speed. Cache under $srcdir so
 	# the build is self-contained and doesn't touch the user's global Zig cache
 	# (zig 0.17's `zig build` takes the global cache only from the environment).
@@ -79,7 +79,7 @@ package() {
 
 	# xdg-desktop-portal FileChooser backend registration. This only ADVERTISES the
 	# backend; to actually get zfd dialogs the user must select it in
-	# ~/.config/xdg-desktop-portal/portals.conf and restart the portal — see the
+	# ~/.config/xdg-desktop-portal/portals.conf and restart the portal; see the
 	# post_install message in zfd.install (install= above).
 	install -Dm644 "$_repo/data/$pkgname.portal" \
 		"$pkgdir/usr/share/xdg-desktop-portal/portals/$pkgname.portal"

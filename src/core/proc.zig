@@ -3,7 +3,7 @@
 //! render thread never blocks and no zombie is left (xdg-open, a terminal), and
 //! `capture`, which runs a CLI tool to completion and returns its stdout (fc-match,
 //! kreadconfig/gsettings, the `--pick` subprocess). GUI-free (goal 2); we shell out
-//! rather than link a toolkit (goal 5). Pure I/O glue — no unit tests.
+//! rather than link a toolkit (goal 5). Pure I/O glue; no unit tests.
 
 const std = @import("std");
 const Dir = std.Io.Dir;
@@ -20,7 +20,7 @@ pub fn openWith(io: std.Io, alloc: std.mem.Allocator, path: []const u8) void {
 
 /// openTerminal opens a terminal emulator with its working directory set to dir. It
 /// resolves *which* terminal from the user's actual preference (see terminalThread),
-/// not a hardcoded beauty contest — the fixed list is only the last-resort fallback.
+/// not a hardcoded beauty contest: the fixed list is only the last-resort fallback.
 pub fn openTerminal(io: std.Io, alloc: std.mem.Allocator, dir: []const u8) void {
     const d = alloc.dupe(u8, dir) catch return;
     const t = std.Thread.spawn(.{}, terminalThread, .{ io, alloc, d }) catch {
@@ -33,13 +33,13 @@ pub fn openTerminal(io: std.Io, alloc: std.mem.Allocator, dir: []const u8) void 
 /// terminalThread resolves the terminal to launch from the best available source and
 /// runs the first that works. There's no registry that enumerates "all terminals"
 /// (even freedesktop's answer, xdg-terminal-exec, falls back to a built-in list), so a
-/// hardcoded probe is unavoidable — but it belongs *last*. Everything above it honors
+/// hardcoded probe is unavoidable, but it belongs *last*. Everything above it honors
 /// a declared preference: $TERMINAL, the desktop's configured default, then the
 /// standard launcher. First success wins (each hides when its tool is absent).
 fn terminalThread(io: std.Io, alloc: std.mem.Allocator, dir: []u8) void {
     defer alloc.free(dir);
 
-    // 1. $TERMINAL — the user's explicit choice, honored by many CLI tools.
+    // 1. $TERMINAL: the user's explicit choice, honored by many CLI tools.
     if (getEnv("TERMINAL")) |t| {
         if (spawnTerm(io, alloc, t, dir)) return;
     }
@@ -48,7 +48,7 @@ fn terminalThread(io: std.Io, alloc: std.mem.Allocator, dir: []u8) void {
         defer alloc.free(t);
         if (spawnTerm(io, alloc, t, dir)) return;
     }
-    // 3. xdg-terminal-exec — the freedesktop standard launcher (a proposal, but the
+    // 3. xdg-terminal-exec: the freedesktop standard launcher (a proposal, but the
     //    correct DE-agnostic entry point wherever it's installed).
     if (spawnTerm(io, alloc, "xdg-terminal-exec", dir)) return;
     // 4. Debian/Ubuntu's alternatives symlink.
@@ -79,7 +79,7 @@ fn deDefaultTerminal(io: std.Io, alloc: std.mem.Allocator) ?[]u8 {
 }
 
 /// spawnTerm launches a resolved terminal `spec` (which may carry arguments) with its
-/// working directory set to `dir` — terminals inherit that cwd, so no per-emulator
+/// working directory set to `dir`; terminals inherit that cwd, so no per-emulator
 /// "--working-directory" flag is needed. Returns true if it spawned; then we wait out
 /// its lifetime on this detached reaper thread (no zombie). False if not on PATH.
 fn spawnTerm(io: std.Io, alloc: std.mem.Allocator, spec: []const u8, dir: []const u8) bool {
@@ -152,7 +152,7 @@ fn freeArgv(alloc: std.mem.Allocator, argv: [][]u8) void {
 // --- capture -----------------------------------------------------------------
 
 /// Captured is one completed subprocess: its exit `code` plus captured stdout (`out`,
-/// owned by the caller — free it).
+/// owned by the caller; free it).
 pub const Captured = struct { code: u8, out: []u8 };
 
 var cap_counter: std.atomic.Value(u32) = .init(0);
@@ -160,7 +160,7 @@ var cap_counter: std.atomic.Value(u32) = .init(0);
 /// capture runs argv to completion and returns its exit code + stdout (owned). stdout
 /// goes through a unique temp file (no pipe plumbing); null if the spawn/wait/read
 /// fails. This is the one place the "spawn a CLI tool and read its output" pattern
-/// lives — shared by the font lookup, the terminal-setting query, and the `--pick`
+/// lives, shared by the font lookup, the terminal-setting query, and the `--pick`
 /// subprocess. Runs on whatever thread calls it (never the render thread).
 pub fn capture(io: std.Io, alloc: std.mem.Allocator, argv: []const []const u8) ?Captured {
     const n = cap_counter.fetchAdd(1, .monotonic);
@@ -189,7 +189,7 @@ pub fn capture(io: std.Io, alloc: std.mem.Allocator, argv: []const []const u8) ?
 }
 
 /// captureLine returns argv's stdout first non-empty line, trimmed and unquoted
-/// (gsettings prints 'gnome-terminal'), owned — or null. For single-value queries.
+/// (gsettings prints 'gnome-terminal'), owned, or null. For single-value queries.
 fn captureLine(io: std.Io, alloc: std.mem.Allocator, argv: []const []const u8) ?[]u8 {
     const cap = capture(io, alloc, argv) orelse return null;
     defer alloc.free(cap.out);

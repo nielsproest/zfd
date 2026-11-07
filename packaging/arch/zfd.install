@@ -1,5 +1,5 @@
 # Shown by pacman on install/upgrade. zfd's package drops the .portal file, which
-# only ADVERTISES that zfd can serve org.freedesktop.impl.portal.FileChooser — it
+# only ADVERTISES that zfd can serve org.freedesktop.impl.portal.FileChooser; it
 # does not make xdg-desktop-portal actually route file dialogs to zfd. The active
 # backend is chosen in portals.conf, which lives in each user's $HOME, so the
 # package can't set it (no single user; must not write to $HOME). Hence this note.

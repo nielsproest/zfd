@@ -1,6 +1,6 @@
 //! Directory listing model, ported from GoFileDialog (the `entry` model in
 //! internal/ui/explorer.go + HumanizeSize in internal/scan). `readDir` uses the
-//! directory's d_type only — no per-file `stat` — so listing a huge folder is one
+//! directory's d_type only (no per-file `stat`), so listing a huge folder is one
 //! cheap syscall pass, the fast path the Go version relies on. This blocking read
 //! is meant to run on a worker thread (goal 1: never on the render thread); the
 //! threading wrapper lives in the platform layer, keeping this piece pure and
@@ -19,7 +19,7 @@ pub const Kind = enum { file, dir, symlink, other };
 pub const Entry = struct {
     name: []u8,
     kind: Kind,
-    size: u64 = 0, // bytes; meaningful for files (dirs display "—")
+    size: u64 = 0, // bytes; meaningful for files (dirs display "--")
     mtime_secs: i64 = 0, // modification time, seconds since the Unix epoch (0 = unknown)
     // Extra metadata from statx (for the optional columns + Properties). All from the
     // one stat the scanner already does, so no extra render-thread I/O (goal 1).
@@ -65,7 +65,7 @@ pub const Listing = struct {
 
 /// readDir lists `path`. Hidden entries (dotfiles) are included; "." and ".." are
 /// not (iterate already omits them). The caller owns the Listing. `io` is Zig
-/// 0.16's I/O handle — the app passes the one from its worker thread, so this
+/// 0.16's I/O handle: the app passes the one from its worker thread, so this
 /// blocking read stays off the render thread (goal 1).
 pub fn readDir(io: std.Io, alloc: std.mem.Allocator, path: []const u8) !Listing {
     return readDirStoppable(io, alloc, path, null);
@@ -135,7 +135,7 @@ fn fsSpace(fd: std.posix.fd_t) ?[2]u64 {
     return .{ st.f_bavail * unit, st.f_blocks * unit };
 }
 
-/// readDirFrom lists an already-open iterable directory — the primitive `readDir`
+/// readDirFrom lists an already-open iterable directory: the primitive `readDir`
 /// wraps, and the seam tests use so they can point at a temp dir handle.
 pub fn readDirFrom(io: std.Io, alloc: std.mem.Allocator, dir: Dir, stop: ?*const bool) !Listing {
     return readDirWith(io, alloc, dir, stop, true);
@@ -149,9 +149,9 @@ fn readDirWith(io: std.Io, alloc: std.mem.Allocator, dir: Dir, stop: ?*const boo
     }
     var it = dir.iterate();
     while (true) {
-        // Resilient iteration: a single entry the mount can't decode — e.g. a non-UTF-8
+        // Resilient iteration: a single entry the mount can't decode (e.g. a non-UTF-8
         // name on an NFS/SMB share makes getdents return EILSEQ/EINVAL, which Zig
-        // surfaces as error.BadPathName — must NOT blank the whole directory. Stop at the
+        // surfaces as error.BadPathName) must NOT blank the whole directory. Stop at the
         // bad entry and return what we gathered so far rather than propagating the error.
         if (stop) |st| if (list.items.len % 256 == 0 and @atomicLoad(bool, st, .acquire)) return error.Canceled;
         const next = it.next(io) catch break;
@@ -163,7 +163,7 @@ fn readDirWith(io: std.Io, alloc: std.mem.Allocator, dir: Dir, stop: ?*const boo
             else => .other,
         };
         // One statx per entry (off the render thread, goal 1) for size/times/mode/
-        // owner — feeds the optional columns + Properties. A failure (e.g. a broken
+        // owner. It feeds the optional columns + Properties. A failure (e.g. a broken
         // symlink) just leaves the metadata at 0 rather than dropping the entry.
         var entry = Entry{ .name = try alloc.dupe(u8, e.name), .kind = kind, .pending = !details };
         errdefer alloc.free(entry.name);
@@ -185,7 +185,7 @@ pub fn fillDetails(alloc: std.mem.Allocator, dir: Dir, name: []const u8, entry: 
 /// directly in a folder; `partial` when it stopped at the entry limit.
 pub const FilesSize = struct { bytes: u64 = 0, files: u32 = 0, items: u32 = 0, partial: bool = false }; // items: everything not hidden, folders too
 
-/// directFilesSize adds up the files directly inside `path` — never descending into
+/// directFilesSize adds up the files directly inside `path`, never descending into
 /// subfolders (a recursive total of a 1 TB tree would mean walking all of it), and
 /// stopping after `limit` entries. Symlinks aren't followed. Off the render thread.
 pub fn directFilesSize(io: std.Io, path: []const u8, limit: usize) FilesSize {
@@ -232,7 +232,7 @@ test "directFilesSize counts only the files directly inside" {
 }
 
 /// entryAt builds one Entry for `name_in_dir` inside the open `dir`, recording it
-/// under `display_name` (owned copy) — e.g. a subfolder search shows "sub/x.txt".
+/// under `display_name` (owned copy), e.g. a subfolder search shows "sub/x.txt".
 pub fn entryAt(alloc: std.mem.Allocator, dir: Dir, name_in_dir: []const u8, display_name: []const u8, kind: Kind) !Entry {
     var entry = Entry{ .name = try alloc.dupe(u8, display_name), .kind = kind };
     fillStat(dir.handle, name_in_dir, &entry);
@@ -253,7 +253,7 @@ fn fillTags(dirfd: std.posix.fd_t, name: []const u8, entry: *Entry) void {
 }
 
 /// fillStat does one statx (following symlinks) for the entry's size/times/mode/
-/// owner. Best-effort — on failure the fields stay 0.
+/// owner. Best-effort: on failure the fields stay 0.
 fn fillStat(dirfd: std.posix.fd_t, name: []const u8, entry: *Entry) void {
     var nbuf: [512]u8 = undefined;
     const name_z = std.mem.printSentinel(&nbuf, "{s}", .{name}, 0) catch return;
@@ -352,7 +352,7 @@ fn grName(gid: u32) ?[*:0]const u8 {
 }
 
 /// ownerName / groupName resolve uid/gid to names (numeric fallback), cached. The
-/// result points into the cache — render it before the next same-slot lookup.
+/// result points into the cache; render it before the next same-slot lookup.
 pub fn ownerName(uid: u32) []const u8 {
     return owner_cache.get(uid, pwName);
 }
@@ -544,7 +544,7 @@ test "groupView keeps the sort inside each section" {
         .{ .name = @constCast("a.png"), .kind = .file },
         .{ .name = @constCast("c.txt"), .kind = .file },
     };
-    var idx = [_]usize{ 2, 0, 3, 1 }; // a.png, b.png, c.txt, dir — sorted by name
+    var idx = [_]usize{ 2, 0, 3, 1 }; // a.png, b.png, c.txt, dir, sorted by name
     groupView(&idx, &es, .kind, 0);
     try testing.expectEqualSlices(usize, &.{ 1, 2, 0, 3 }, &idx);
     try testing.expectEqualStrings("Images", groupLabel(.kind, groupKey(.kind, es[2], 0)));
@@ -622,7 +622,7 @@ fn inSet(ext: []const u8, set: []const []const u8) bool {
 
 /// formatDate renders an epoch-seconds mtime as "YYYY-MM-DD HH:MM" into `buf` (a
 /// 20-byte buffer is enough) and returns the slice. Empty for a zero/negative
-/// (unknown) time. UTC for now — local-time conversion is a later refinement,
+/// (unknown) time. UTC for now; local-time conversion is a later refinement,
 /// matching the Go project's `formatDate` layout otherwise.
 /// utc_offset gives the local UTC offset in seconds in effect at a Unix time
 /// (daylight saving included). The core has no C library, so the UI installs one
@@ -652,7 +652,7 @@ pub fn formatDate(buf: []u8, mtime_secs: i64) []const u8 {
 }
 
 /// formatDateFriendly is Finder's date: "Today at 13:09", "Yesterday at 17:26", else
-/// "7 Jul 2026 at 23:11" — local time, judged against `now_secs` (also Unix seconds).
+/// "7 Jul 2026 at 23:11": local time, judged against `now_secs` (also Unix seconds).
 pub fn formatDateFriendly(buf: []u8, secs: i64, now_secs: i64) []const u8 {
     if (secs <= 0) return buf[0..0];
     const local = @max(localSecs(secs), 0);

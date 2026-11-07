@@ -1,6 +1,6 @@
 //! Filesystem name helpers + the actual file operations, ported from the Go
-//! `internal/fsops`. The pure, allocation-light part — extension handling and
-//! collision-free naming — is unit-tested against the Go originals; below it are the
+//! `internal/fsops`. The pure, allocation-light part (extension handling and
+//! collision-free naming) is unit-tested against the Go originals; below it are the
 //! real move/copy/delete/trash syscalls (run on the op-runner's worker thread, never
 //! the render thread) and the detached launchers for xdg-open / a terminal.
 
@@ -11,7 +11,7 @@ const tags = @import("tags.zig");
 const comments = @import("comments.zig");
 const Dir = std.Io.Dir;
 
-/// ext is the extension of a base name — the suffix from its final dot (".gz" for
+/// ext is the extension of a base name: the suffix from its final dot (".gz" for
 /// "a.tar.gz"), matching Go's filepath.Ext. No dot → empty. A leading-dot dotfile
 /// (".bashrc") counts wholly as the extension, per filepath.Ext. Assumes a base
 /// name (no path separators).
@@ -85,9 +85,9 @@ pub fn measureTree(io: std.Io, alloc: std.mem.Allocator, src: []const u8) Measur
 }
 
 /// copyPath recursively copies src to dst, reporting into `prog` (per file) and
-/// honoring cancellation between entries — returns error.Canceled if asked to stop.
+/// honoring cancellation between entries; returns error.Canceled if asked to stop.
 /// Directories are recreated and their contents copied; symlinks are followed (a
-/// cyclic symlink would loop — a guard is a later refinement). dst's parent must
+/// cyclic symlink would loop; a guard is a later refinement). dst's parent must
 /// exist. `prog` may be null (no progress/cancel, e.g. tests).
 pub fn copyPath(io: std.Io, alloc: std.mem.Allocator, src: []const u8, dst: []const u8, prog: ?*Progress) !void {
     const portable = restrictedNamesAt(std.fs.path.dirname(dst) orelse "/");
@@ -96,7 +96,7 @@ pub fn copyPath(io: std.Io, alloc: std.mem.Allocator, src: []const u8, dst: []co
 
 /// copyTree is copyPath's recursion. With `portable` set (the destination is an SMB
 /// share or a FAT/NTFS/exFAT drive) each child is written under portableName, since
-/// those filesystems refuse names like "a:b" — and the kernel reports that refusal as
+/// those filesystems refuse names like "a:b", and the kernel reports that refusal as
 /// "file not found", which used to fail the whole item with a baffling error.
 fn copyTree(io: std.Io, alloc: std.mem.Allocator, src: []const u8, dst: []const u8, prog: ?*Progress, portable: bool) !void {
     if (prog) |p| {
@@ -153,7 +153,7 @@ fn copyTags(alloc: std.mem.Allocator, src: []const u8, dst: []const u8) void {
 const copy_chunk: usize = 8 << 20;
 
 /// copyFileChunked copies one regular file in `chunk`-sized steps, reporting bytes and
-/// checking for cancellation between steps — so a multi-GB file can be stopped
+/// checking for cancellation between steps, so a multi-GB file can be stopped
 /// mid-copy instead of Cancel waiting for the whole file. Uses copy_file_range (in-
 /// kernel, and server-side on NFS/CIFS when supported), falling back to read/write
 /// where the kernel refuses (cross-filesystem on old kernels, some FUSE mounts).
@@ -235,7 +235,7 @@ pub fn movePath(io: std.Io, alloc: std.mem.Allocator, src: []const u8, dst: []co
 
 /// chmodPath sets `path`'s permission bits (the low 12: rwx for owner/group/other plus
 /// setuid/setgid/sticky). Doesn't follow a trailing symlink's target differently than
-/// chmod(1) would — i.e. it does follow it, as chmod does.
+/// chmod(1) would; i.e. it does follow it, as chmod does.
 pub fn chmodPath(path: []const u8, mode: u32) !void {
     var buf: [std.fs.max_path_bytes + 1]u8 = undefined;
     if (path.len >= buf.len) return error.NameTooLong;
@@ -252,7 +252,7 @@ pub fn chmodPath(path: []const u8, mode: u32) !void {
 }
 
 /// makeLinkIn creates a symlink in `dir` pointing at `target` (absolute), named
-/// "<name> (link)" — made unique if taken — and returns the name used (owned).
+/// "<name> (link)" (made unique if taken) and returns the name used (owned).
 pub fn makeLinkIn(io: std.Io, alloc: std.mem.Allocator, dir: []const u8, target: []const u8) ![]u8 {
     const base = std.fs.path.basename(target);
     const want = try alloc.print("{s} (link)", .{base});
@@ -265,7 +265,7 @@ pub fn makeLinkIn(io: std.Io, alloc: std.mem.Allocator, dir: []const u8, target:
     return name;
 }
 
-/// restoreTo moves `from` back to the exact path `to` — the undo of a move, which must
+/// restoreTo moves `from` back to the exact path `to`: the undo of a move, which must
 /// give the item its ORIGINAL name back (a move into a folder that already had that
 /// name stored it as "name (2)"). If something has since taken `to`, the item gets a
 /// fresh unique name beside it rather than clobbering the newcomer.
@@ -279,7 +279,7 @@ pub fn restoreTo(io: std.Io, alloc: std.mem.Allocator, from: []const u8, to: []c
     return movePath(io, alloc, from, alt, prog);
 }
 
-/// deletePath removes a file or directory tree (permanent — callers should prefer
+/// deletePath removes a file or directory tree (permanent; callers should prefer
 /// trashToHome for user-facing deletes).
 pub fn deletePath(io: std.Io, path: []const u8) !void {
     try Dir.cwd().deleteTree(io, path);
@@ -312,7 +312,7 @@ pub const TrashLoc = struct {
 };
 
 /// resolveTrashDir decides where `path` should be trashed: the home trash when `path`
-/// is on the same filesystem as `trash_home`, else the per-filesystem top-dir trash —
+/// is on the same filesystem as `trash_home`, else the per-filesystem top-dir trash:
 /// `$topdir/.Trash/$uid` when `$topdir/.Trash` is a sticky, non-symlink directory (the
 /// admin-provided shared can, per the spec), else the per-user `$topdir/.Trash-$uid`.
 /// It's the single source of truth shared by trashing and by undo/restore, so both
@@ -326,7 +326,7 @@ pub fn resolveTrashDir(alloc: std.mem.Allocator, trash_home: []const u8, path: [
     return .{ .dir = try topDirTrashDir(alloc, topdir), .topdir = topdir };
 }
 
-/// trash moves an absolute path to its XDG trash — the home trash, or the
+/// trash moves an absolute path to its XDG trash: the home trash, or the
 /// per-filesystem top-dir trash when it's on another mount (native `.Trash-$uid`
 /// support, replacing the old cross-device failure). Writes the companion .trashinfo
 /// first per the spec; the recorded Path is absolute for the home trash and relative
@@ -424,7 +424,7 @@ fn topDirTrashDir(alloc: std.mem.Allocator, topdir: []const u8) ![]u8 {
 }
 
 /// stickyDir reports whether `path` is a directory (not a symlink) with the sticky bit
-/// set — the spec's precondition for using the admin's `$topdir/.Trash/$uid`.
+/// set: the spec's precondition for using the admin's `$topdir/.Trash/$uid`.
 fn stickyDir(path: []const u8) bool {
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const path_z = std.mem.printSentinel(&buf, "{s}", .{path}, 0) catch return false;
@@ -467,8 +467,8 @@ pub fn percentEncodePath(alloc: std.mem.Allocator, path: []const u8) ![]u8 {
     return out.toOwnedSlice(alloc);
 }
 
-/// fileUriToPath turns a `file://[authority]/path` URI (percent-encoded) — or a bare
-/// absolute path — into a filesystem path (owned). The inverse of the `file://` +
+/// fileUriToPath turns a `file://[authority]/path` URI (percent-encoded), or a bare
+/// absolute path, into a filesystem path (owned). The inverse of the `file://` +
 /// percentEncodePath pairing. Null for anything that isn't an absolute local path
 /// (remote scheme, relative path). Used by the FileManager1 reveal interface.
 pub fn fileUriToPath(alloc: std.mem.Allocator, uri: []const u8) ?[]u8 {
@@ -490,7 +490,7 @@ pub fn fileUriToPath(alloc: std.mem.Allocator, uri: []const u8) ?[]u8 {
 /// decodeDroppedPath un-escapes a path handed to us by a drop from another app.
 ///
 /// A dropped `text/uri-list` carries percent-encoded URIs, and the toolkit that hands
-/// them over may or may not have decoded them already — GLFW's X11 backend strips the
+/// them over may or may not have decoded them already: GLFW's X11 backend strips the
 /// `file://` prefix but leaves the escapes in place, so "My%20Photos/a%20b.png" arrives
 /// as a path that resolves to nothing and the copy silently fails. Decoding
 /// unconditionally isn't safe either: a real filename may contain a literal '%', and
@@ -513,7 +513,7 @@ pub fn decodeDroppedPath(io: std.Io, alloc: std.mem.Allocator, path: []const u8)
 
 /// exists reports whether an absolute path resolves (follows symlinks).
 /// pathExists reports whether anything (file, folder, dangling-or-not symlink) is at
-/// `path` — lstat semantics, so a broken symlink still counts as "taken".
+/// `path`, using lstat semantics, so a broken symlink still counts as "taken".
 pub fn pathExists(io: std.Io, path: []const u8) bool {
     _ = Dir.cwd().statFile(io, path, .{ .follow_symlinks = false }) catch return false;
     return true;
@@ -582,9 +582,9 @@ fn freeNames(alloc: std.mem.Allocator, names: [][]u8) void {
 
 /// invalidNameReason validates a single file/dir NAME (one path leaf; the caller
 /// trims surrounding whitespace first). Returns a short, user-facing reason to reject
-/// it, or null when it's fine. It flags only what is illegal on EVERY filesystem — an
+/// it, or null when it's fine. It flags only what is illegal on EVERY filesystem: an
 /// empty name, the reserved "." / "..", a '/' (the path separator, which a leaf can
-/// never contain), or an embedded NUL — so we never refuse a name that ext4/btrfs would
+/// never contain), or an embedded NUL, so we never refuse a name that ext4/btrfs would
 /// happily accept. Characters that are illegal only on FAT/NTFS/exFAT (\ : * ? " < > |,
 /// trailing dots/spaces) are deliberately NOT rejected here; on the rare mount that
 /// forbids them the syscall's own error surfaces (op_err, or the requesting app's write).
@@ -673,7 +673,7 @@ pub fn brief(path: []const u8) ?Brief {
 
 /// freeBytesAt is the space available to us on the filesystem holding `dir`, or
 /// null when it can't be told (statfs failed, or a pseudo filesystem that reports no
-/// blocks — some FUSE mounts do, and must not be treated as full).
+/// blocks; some FUSE mounts do, and must not be treated as full).
 pub fn freeBytesAt(dir: []const u8) ?u64 {
     var buf: [std.fs.max_path_bytes + 1]u8 = undefined;
     if (dir.len >= buf.len) return null;
@@ -809,7 +809,7 @@ fn childEnv(alloc: std.mem.Allocator, id: ?[]const u8) ?std.process.Environ.Map 
 
 /// openTerminal opens a terminal emulator with its working directory set to dir. It
 /// resolves *which* terminal from the user's actual preference (see terminalThread),
-/// not a hardcoded beauty contest — the fixed list is only the last-resort fallback.
+/// not a hardcoded beauty contest: the fixed list is only the last-resort fallback.
 pub fn openTerminal(io: std.Io, alloc: std.mem.Allocator, dir: []const u8) void {
     const d = alloc.dupe(u8, dir) catch return;
     const id = takeStartupId(alloc);
@@ -824,7 +824,7 @@ pub fn openTerminal(io: std.Io, alloc: std.mem.Allocator, dir: []const u8) void 
 /// terminalThread resolves the terminal to launch from the best available source and
 /// runs the first that works. There's no registry that enumerates "all terminals"
 /// (even freedesktop's answer, xdg-terminal-exec, falls back to a built-in list), so a
-/// hardcoded probe is unavoidable — but it belongs *last*. Everything above it honors
+/// hardcoded probe is unavoidable, but it belongs *last*. Everything above it honors
 /// a declared preference: $TERMINAL, the desktop's configured default, then the
 /// standard launcher. First success wins (each hides when its tool is absent).
 fn terminalThread(io: std.Io, alloc: std.mem.Allocator, dir: []u8, id: ?[]u8) void {
@@ -834,7 +834,7 @@ fn terminalThread(io: std.Io, alloc: std.mem.Allocator, dir: []u8, id: ?[]u8) vo
     defer if (env) |*m| m.deinit();
     const envp: ?*const std.process.Environ.Map = if (env) |*m| m else null;
 
-    // 1. $TERMINAL — the user's explicit choice, honored by many CLI tools.
+    // 1. $TERMINAL: the user's explicit choice, honored by many CLI tools.
     if (getEnv("TERMINAL")) |t| {
         if (spawnTerm(io, alloc, t, dir, envp)) return;
     }
@@ -843,7 +843,7 @@ fn terminalThread(io: std.Io, alloc: std.mem.Allocator, dir: []u8, id: ?[]u8) vo
         defer alloc.free(t);
         if (spawnTerm(io, alloc, t, dir, envp)) return;
     }
-    // 3. xdg-terminal-exec — the freedesktop standard launcher (a proposal, but the
+    // 3. xdg-terminal-exec: the freedesktop standard launcher (a proposal, but the
     //    correct DE-agnostic entry point wherever it's installed).
     if (spawnTerm(io, alloc, "xdg-terminal-exec", dir, envp)) return;
     // 4. Debian/Ubuntu's alternatives symlink.
@@ -874,7 +874,7 @@ fn deDefaultTerminal(io: std.Io, alloc: std.mem.Allocator) ?[]u8 {
 }
 
 /// spawnTerm launches a resolved terminal `spec` (which may carry arguments) with its
-/// working directory set to `dir` — terminals inherit that cwd, so no per-emulator
+/// working directory set to `dir`; terminals inherit that cwd, so no per-emulator
 /// "--working-directory" flag is needed. Returns true if it spawned; then we wait out
 /// its lifetime on this detached reaper thread (no zombie). False if not on PATH.
 fn spawnTerm(io: std.Io, alloc: std.mem.Allocator, spec: []const u8, dir: []const u8, env: ?*const std.process.Environ.Map) bool {
@@ -889,7 +889,7 @@ fn spawnTerm(io: std.Io, alloc: std.mem.Allocator, spec: []const u8, dir: []cons
 }
 
 /// captureLine spawns argv, returning its stdout's first non-empty line, trimmed and
-/// unquoted (gsettings prints 'gnome-terminal'), owned — or null on any failure. Used
+/// unquoted (gsettings prints 'gnome-terminal'), owned, or null on any failure. Used
 /// to query a desktop's terminal setting; runs on the detached terminal thread.
 fn captureLine(io: std.Io, alloc: std.mem.Allocator, argv: []const []const u8) ?[]u8 {
     var pbuf: [64]u8 = undefined;

@@ -2,7 +2,7 @@
 Type=Application
 Name=ZFD
 GenericName=File Manager
-Comment=Zig File Dialog — tabbed file explorer
+Comment=Zig File Dialog: a tabbed file explorer
 Exec=zfd %F
 Icon=system-file-manager
 Categories=System;Utility;Core;FileTools;FileManager;

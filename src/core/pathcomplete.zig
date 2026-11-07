@@ -1,5 +1,5 @@
 //! Path-bar autocompletion: given the text being typed in the address bar, find the
-//! subdirectory that extends the trailing leaf — Explorer's inline suggestion. The
+//! subdirectory that extends the trailing leaf: Explorer's inline suggestion. The
 //! split/candidate logic is pure and unit-tested; `completeName` does the one readdir.
 //!
 //! Case-*sensitive* on purpose: the target filesystem is (Linux), so "Doc" completing
@@ -15,7 +15,7 @@ pub const Split = struct { dir: []const u8, leaf: []const u8 };
 /// and the trailing leaf being typed:
 ///   "/home/nil/Doc" → { "/home/nil/", "Doc" }
 ///   "/"             → { "/", "" }
-///   "foo"           → { "", "foo" }   (no slash — not an absolute path, caller rejects)
+///   "foo"           → { "", "foo" }   (no slash: not an absolute path, caller rejects)
 pub fn splitLeaf(typed: []const u8) Split {
     if (std.mem.lastIndexOfScalar(u8, typed, '/')) |i| {
         return .{ .dir = typed[0 .. i + 1], .leaf = typed[i + 1 ..] };
@@ -30,7 +30,7 @@ pub fn isCandidate(name: []const u8, leaf: []const u8) bool {
 }
 
 /// completeName scans `dir_path` for the alphabetically-first directory entry that
-/// `isCandidate` of `leaf`, and returns its name (owned by `alloc`) — or null when the
+/// `isCandidate` of `leaf`, and returns its name (owned by `alloc`), or null when the
 /// leaf is empty, the directory can't be read, or nothing matches. Alphabetical-first
 /// makes the suggestion deterministic (readdir order isn't). Symlinks are included
 /// since they commonly point at directories; a bad guess just fails to navigate.
@@ -41,7 +41,7 @@ pub fn completeName(io: std.Io, alloc: std.mem.Allocator, dir_path: []const u8, 
     return completeNameFrom(io, alloc, dir, leaf);
 }
 
-/// completeNameFrom is the primitive `completeName` wraps — the seam tests drive with a
+/// completeNameFrom is the primitive `completeName` wraps: the seam tests drive with a
 /// temp-dir handle. NAME_MAX is 255, so a 256-byte "best so far" buffer never truncates.
 pub fn completeNameFrom(io: std.Io, alloc: std.mem.Allocator, dir: Dir, leaf: []const u8) ?[]u8 {
     if (leaf.len == 0) return null;
@@ -86,7 +86,7 @@ test "splitLeaf splits at the last slash" {
 
 test "isCandidate: strict, case-sensitive prefix extension" {
     try testing.expect(isCandidate("Documents", "Doc"));
-    try testing.expect(isCandidate("Documents", "")); // len>0 and startsWith "" — but caller gates empty leaf
+    try testing.expect(isCandidate("Documents", "")); // len>0 and startsWith "", but caller gates empty leaf
     try testing.expect(!isCandidate("Doc", "Doc")); // equal → nothing added
     try testing.expect(!isCandidate("documents", "Doc")); // case-sensitive
     try testing.expect(!isCandidate("Downloads", "Doc"));

@@ -1,6 +1,6 @@
-//! Gallery view (Finder's, Ctrl+4): a large preview of the item under the cursor —
-//! the same loaded preview as Quick Look, so pictures, PDFs, video frames, text and
-//! archive listings all show — over a strip of thumbnails to step through. Selection,
+//! Gallery view (Finder's, Ctrl+4): a large preview of the item under the cursor
+//! (the same loaded preview as Quick Look, so pictures, PDFs, video frames, text and
+//! archive listings all show) over a strip of thumbnails to step through. Selection,
 //! drag and drop, context menus, rename, type-ahead and the shortcuts behave as in the
 //! other views (they share the table's helpers); Left/Right step along the strip.
 

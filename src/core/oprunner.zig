@@ -4,10 +4,10 @@
 //! non-blocking poll() reports each completion so the browser can refresh and
 //! surface any error.
 //!
-//! Jobs run on up to `max_lanes` lanes at once — each lane is a worker thread with
+//! Jobs run on up to `max_lanes` lanes at once: each lane is a worker thread with
 //! its own Progress, so a second copy starts right away beside a long first one and
 //! each gets its own progress window (like Explorer/Finder). Lanes are spawned on
-//! demand; beyond max_lanes, jobs wait in a FIFO queue (never superseded like scans —
+//! demand; beyond max_lanes, jobs wait in a FIFO queue (never superseded like scans:
 //! every requested operation must actually run). Heap-pinned: the lanes hold
 //! pointers into `self` (the Browser owns an OpRunner inline and is heap-allocated).
 
@@ -97,7 +97,7 @@ pub const OpRunner = struct {
     pub const Pair = struct { src: []u8, dst: []u8 };
     pub const PairList = struct { pairs: []Pair };
     /// TransferKind says what a completion's pairs are: an undoable copy or move, or
-    /// (untrashable) items a Move to Trash couldn't move — src is the path, dst "" —
+    /// (untrashable) items a Move to Trash couldn't move (src is the path, dst "")
     /// so the UI can offer to delete them permanently instead.
     pub const TransferKind = enum { none, copy, move, untrashable };
     pub const TrashJob = struct { trash_home: []u8, paths: [][]u8 };
@@ -500,7 +500,7 @@ pub const OpRunner = struct {
     /// checks up front that the transfer can succeed: the destination must be
     /// writable and have room for everything that will actually be written (a move
     /// within one filesystem is a rename and needs none; a Replace frees what it
-    /// overwrites). Returns the error name that stops the whole batch, or null — so a
+    /// overwrites). Returns the error name that stops the whole batch, or null, so a
     /// full disk fails at once, with nothing copied, instead of halfway through.
     fn beginBatch(self: *OpRunner, prog: *Progress, phase: progress.Phase, b: Batch, move: bool) ?[]const u8 {
         var files: u64 = 0;
@@ -744,7 +744,7 @@ test "oprunner copy transfers the exact bytes (not just creates the file)" {
     var tmp = testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
 
-    // 256 KiB of a distinctive, position-dependent pattern — if the copy were a stub
+    // 256 KiB of a distinctive, position-dependent pattern: if the copy were a stub
     // (empty file, wrong length, zeroed reflink) the byte compare below would fail.
     const n = 256 * 1024;
     const data = try a.alloc(u8, n);
@@ -777,7 +777,7 @@ test "oprunner copy transfers the exact bytes (not just creates the file)" {
     try testing.expect(done != null and done.?.err_name == null);
     defer done.?.deinit(a);
 
-    // After: read the copy back and assert it's byte-for-byte identical — proof the
+    // After: read the copy back and assert it's byte-for-byte identical, proof the
     // data actually transferred (a fast/"instant" copy is a real reflink/copy_file_range).
     const back = try std.Io.Dir.cwd().readFileAlloc(io, copied, a, .limited(1 << 20));
     defer a.free(back);

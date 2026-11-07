@@ -1,4 +1,4 @@
-//! Selection model over the current listing — the familiar file-manager scheme
+//! Selection model over the current listing: the familiar file-manager scheme
 //! (goal 6): plain click selects one, Ctrl-click toggles, Shift-click selects a
 //! contiguous range from an anchor. A `cursor` tracks the keyboard-focused row.
 //! Index-based and reset on navigation (a fresh listing renumbers everything);
@@ -82,7 +82,7 @@ pub const Selection = struct {
         self.reveal = true;
     }
 
-    /// requestReveal asks the scrollable view to scroll the cursor into view — used
+    /// requestReveal asks the scrollable view to scroll the cursor into view. Used
     /// when a *different* view (type-ahead, the treemap) moves the cursor, so the
     /// file list follows. A plain click on an already-visible row does NOT set this.
     pub fn requestReveal(self: *Selection) void {
@@ -107,7 +107,7 @@ pub const Selection = struct {
         for (self.selected.items) |*b| b.* = !b.*;
     }
 
-    /// clear deselects every row (keeps the size) — used to rebuild a marquee box.
+    /// clear deselects every row (keeps the size). Used to rebuild a marquee box.
     pub fn clear(self: *Selection) void {
         self.clearAll();
     }

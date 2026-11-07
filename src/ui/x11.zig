@@ -7,7 +7,7 @@ const std = @import("std");
 
 pub const x = @import("c_x11"); // src/c/x11.h, translated in build.zig
 
-/// Set from ZFD_DEBUG at startup — logs WM move/resize attempts to stderr.
+/// Set from ZFD_DEBUG at startup; logs WM move/resize attempts to stderr.
 pub var debug: bool = false;
 
 /// _NET_WM_MOVERESIZE directions (EWMH).
@@ -32,7 +32,7 @@ fn window(glfw: ?*anyopaque) x.Window {
 }
 
 /// nowNs reads a monotonic clock in nanoseconds via the raw Linux syscall (this Zig's
-/// std.time has no Timer/Instant, and the app is Linux-only — same raw-syscall approach
+/// std.time has no Timer/Instant, and the app is Linux-only, the same raw-syscall approach
 /// main.zig uses for fork/setsid). Used only for coarse drag-out timeouts.
 fn nowNs() u64 {
     var ts: std.os.linux.timespec = undefined;
@@ -63,7 +63,7 @@ fn ignoreXError(_: ?*x.Display, _: [*c]x.XErrorEvent) callconv(.c) c_int {
 }
 
 /// startMoveResize asks the window manager to move or resize our window from the
-/// current pointer position — how a borderless window gets interactive move/resize.
+/// current pointer position: how a borderless window gets interactive move/resize.
 /// A held mouse button is an implicit X pointer grab, so we ungrab first (else the
 /// WM won't take over the drag).
 pub fn startMoveResize(glfw: ?*anyopaque, dir: Direction) void {
@@ -193,7 +193,7 @@ const DragOut = struct {
     }
 
     /// serve answers a target's XConvertSelection. Handles TARGETS (the "what do you
-    /// have?" query most toolkits send first — answering None there is why some apps
+    /// have?" query most toolkits send first; answering None there is why some apps
     /// refused the drop outright) plus the three flavours we advertise.
     fn serve(d: *DragOut, req: *x.XSelectionRequestEvent) void {
         var notify = std.mem.zeroes(x.XEvent);
@@ -243,7 +243,7 @@ const DragOut = struct {
 /// (Expose, ConfigureNotify, FocusIn, the WM's ClientMessages…) stays queued for GLFW
 /// to process when the drag ends. The previous loop drained the queue with XNextEvent
 /// and discarded whatever it didn't recognise, so a drag-out silently ate the window's
-/// resize/focus/close events — the app came back from a drag confused about its own
+/// resize/focus/close events, and the app came back from a drag confused about its own
 /// state, which is where the "stuck after dragging" reports came from.
 fn dragEventPred(_: ?*x.Display, ev: [*c]x.XEvent, _: x.XPointer) callconv(.c) c_int {
     return switch (ev.*.type) {
@@ -252,7 +252,7 @@ fn dragEventPred(_: ?*x.Display, ev: [*c]x.XEvent, _: x.XPointer) callconv(.c) c
     };
 }
 
-/// startDragOut runs a hand-written XDND *source* — GLFW/ImGui have no drag-source
+/// startDragOut runs a hand-written XDND *source*: GLFW/ImGui have no drag-source
 /// API. It's a modal loop: grab the pointer, follow it to whatever XDND-aware window
 /// it's over (sending Enter/Position), and on release send Drop (serving the dragged
 /// paths as text/uri-list or plain text) or Leave. Blocks until the drop completes or
@@ -266,7 +266,7 @@ pub fn startDragOut(glfw: ?*anyopaque, uri_list: []const u8, text_list: []const 
     // Only a drag whose button is REALLY still down may start. The caller works from
     // ImGui's view of the mouse, which lags the server: right after a drag-out ends
     // (the grab ate the physical release) ImGui can still report a live payload for a
-    // frame, and starting again there produced a phantom drag with no button held —
+    // frame, and starting again there produced a phantom drag with no button held:
     // the target (Discord) got a fresh XdndEnter it could never see finish, and kept
     // re-offering "Upload file" until the user clicked.
     var p_root: c_int = 0;
@@ -310,7 +310,7 @@ pub fn startDragOut(glfw: ?*anyopaque, uri_list: []const u8, text_list: []const 
     // A held button is an implicit grab on OUR window; re-grab on the root so we keep
     // following the pointer over other applications' windows.
     _ = x.XUngrabPointer(dpy, x.CurrentTime);
-    const cursor = x.XCreateFontCursor(dpy, 60); // XC_hand2 — the conventional drag cursor
+    const cursor = x.XCreateFontCursor(dpy, 60); // XC_hand2, the conventional drag cursor
     if (x.XGrabPointer(dpy, root, 0, x.PointerMotionMask | x.ButtonReleaseMask | x.ButtonPressMask, x.GrabModeAsync, x.GrabModeAsync, x.None, cursor, x.CurrentTime) != x.GrabSuccess) {
         _ = x.XSetSelectionOwner(dpy, d.a_sel, x.None, x.CurrentTime);
         if (cursor != 0) _ = x.XFreeCursor(dpy, cursor);
@@ -351,7 +351,7 @@ pub fn startDragOut(glfw: ?*anyopaque, uri_list: []const u8, text_list: []const 
         while (x.XCheckIfEvent(dpy, &ev, dragEventPred, null) != 0) {
             switch (ev.type) {
                 x.MotionNotify => {
-                    // Once the button is up the target is settled — a stray motion must
+                    // Once the button is up the target is settled; a stray motion must
                     // not re-aim the drag at a window the user already left.
                     if (dropped or release_at_ns != 0) continue;
                     d.retarget(ev.xmotion.x_root, ev.xmotion.y_root, ev.xmotion.time);
@@ -739,7 +739,7 @@ pub fn makeChildWindow(child: ?*anyopaque, parent: ?*anyopaque) void {
 /// app that asked for it: transient-for + modal over `parent_xid` when we have one,
 /// else keep-above, since there's no window to tie it to. Either way it stays out of
 /// the taskbar, pager and Alt+Tab: it belongs to the parent app, which the switcher
-/// still shows — activating that brings the dialog up with it. Call before mapping —
+/// still shows; activating that brings the dialog up with it. Call before mapping:
 /// the WM only reads the initial _NET_WM_STATE at map time.
 pub fn setDialogParent(glfw: ?*anyopaque, parent_xid: ?c_ulong) void {
     const dpy = display() orelse return;
@@ -767,7 +767,7 @@ pub fn setDialogParent(glfw: ?*anyopaque, parent_xid: ?c_ulong) void {
 // when the client advertises _NET_WM_SYNC_REQUEST and a sync counter: before each
 // resize step it sends a request carrying a value, and waits until the client, having
 // drawn a frame at the new size, sets its counter to it. Without that the WM resizes
-// as fast as the pointer moves and the content trails behind — the "slow" resize. GLFW
+// as fast as the pointer moves and the content trails behind (the "slow" resize). GLFW
 // doesn't take part, and drops client messages it doesn't know (even while it waits
 // for events), so the request is caught where Xlib decodes events (XESetWireToEvent),
 // whoever is reading the queue.
@@ -853,8 +853,8 @@ fn onWireConfigure(dpy: ?*x.Display, re: ?*x.XEvent, wire: ?*anyopaque) callconv
 }
 
 /// ackResizeSync tells the WM that the frame for its last resize step is on screen
-/// (call after swapping buffers). Only once that frame was drawn at the new size —
-/// after the resize arrived — or, for a request that brought none, a few frames on.
+/// (call after swapping buffers). Only once that frame was drawn at the new size
+/// (after the resize arrived) or, for a request that brought none, a few frames on.
 pub fn ackResizeSync() void {
     const v = sync_owed orelse return;
     sync_frames +|= 1;

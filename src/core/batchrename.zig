@@ -1,13 +1,13 @@
 //! Batch rename: the naming rules for renaming many items at once (Dolphin's / Thunar's
-//! "rename N items"). Pure — the dialog previews with these functions and the op-runner
-//! applies the result — so every rule is unit-tested.
+//! "rename N items"). Pure: the dialog previews with these functions and the op-runner
+//! applies the result, so every rule is unit-tested.
 //!
 //! Two modes:
-//!   • Pattern — `#` is the item's number (a run of `#` sets the zero-padding: `###` →
+//!   • Pattern: `#` is the item's number (a run of `#` sets the zero-padding: `###` →
 //!     001, 002…), `*` is the original name without its extension. The original
 //!     extension is kept unless the pattern names one itself ("photo_#" on "a.jpg" →
 //!     "photo_1.jpg"; "doc_#.txt" → "doc_1.txt").
-//!   • Find/replace — every occurrence of `find` in the name becomes `replace`.
+//!   • Find/replace: every occurrence of `find` in the name becomes `replace`.
 
 const std = @import("std");
 
@@ -46,7 +46,7 @@ fn applyPattern(alloc: std.mem.Allocator, pattern: []const u8, name: []const u8,
     return out.toOwnedSlice(alloc);
 }
 
-/// extOf returns ".ext" (including the dot) or "" — a leading dot (".bashrc") is a
+/// extOf returns ".ext" (including the dot) or ""; a leading dot (".bashrc") is a
 /// name, not an extension.
 fn extOf(name: []const u8) []const u8 {
     const dot = std.mem.lastIndexOfScalar(u8, name, '.') orelse return "";

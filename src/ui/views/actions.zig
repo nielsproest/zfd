@@ -1,4 +1,4 @@
-//! ViewActions — the shared right-click menu and its modals (Properties, Open-with,
+//! ViewActions: the shared right-click menu and its modals (Properties, Open-with,
 //! Delete-confirm) for the file views. The table, the treemap, and any future view
 //! (icon grid) are all representations of one Browser, so they raise the SAME menu
 //! through this component: the shell owns one ViewActions and hands it to every view.
@@ -6,7 +6,7 @@
 //! The modals open via pending flags and are drawn once at SHELL scope (drawModals),
 //! so OpenPopup and BeginPopupModal share an ImGui ID scope regardless of which view's
 //! nested context popup raised the menu (calling OpenPopup from inside the row popup
-//! scoped it wrong — that's why Properties "did nothing" before this was centralized).
+//! scoped it wrong; that's why Properties "did nothing" before this was centralized).
 //! Rename routes through the model (b.requestRename); the table (always present) picks
 //! it up and does the inline edit, so rename works from any view.
 
@@ -129,7 +129,7 @@ pub const ViewActions = struct {
 
     /// dragSource resolves a row-drag payload to the browser it came from. The payload
     /// carries that browser's address (so a drop in another tab or pane reads the right
-    /// snapshot); it's only trusted if that browser still exists — a tab closed
+    /// snapshot); it's only trusted if that browser still exists: a tab closed
     /// mid-drag must not leave a dangling pointer behind.
     pub fn dragSource(self: *const ViewActions, payload: ?*const c.ImGuiPayload) ?*Browser {
         const p = payload orelse return null;
@@ -205,7 +205,7 @@ pub const ViewActions = struct {
     }
 
     /// archiveSection draws the WinRAR-style extract/compress items (only when bsdtar is
-    /// present). An all-archive selection gets Extract; anything else gets Compress —
+    /// present). An all-archive selection gets Extract; anything else gets Compress,
     /// never both. All actions run off-thread via the OpRunner (progress + refresh).
     /// imageSection is Finder's Quick Actions for pictures: rotate, convert (ffmpeg).
     fn imageSection(self: *ViewActions, b: *Browser) void {
@@ -259,7 +259,7 @@ pub const ViewActions = struct {
             return;
         }
         // Compress: the formats sit inline on one row instead of in an "Add to archive ▶"
-        // submenu. Popups are confined to the main window (multi-viewport stays off — it
+        // submenu. Popups are confined to the main window (multi-viewport stays off; it
         // made menus blink), so a submenu that didn't fit beside the context menu was
         // clamped right on top of it. Hover a format to see the resulting file name.
         var nb: [512]u8 = undefined;
@@ -457,10 +457,10 @@ pub const ViewActions = struct {
                 const why: []const u8 = switch (prob) {
                     .none => "",
                     .unchanged => "  (unchanged)",
-                    .empty => "  \u{2014} empty name",
-                    .invalid => "  \u{2014} invalid name",
-                    .duplicate => "  \u{2014} duplicate",
-                    .exists => "  \u{2014} already exists",
+                    .empty => "  (empty name)",
+                    .invalid => "  (invalid name)",
+                    .duplicate => "  (duplicate)",
+                    .exists => "  (already exists)",
                 };
                 var lb: [700]u8 = undefined;
                 const line = std.mem.print(&lb, "{s}{s}", .{ nn, why }) catch nn;
@@ -563,7 +563,7 @@ pub const ViewActions = struct {
 
     /// drawConflictModal asks what to do with a copy/move whose names are already taken
     /// at the destination. Raised by the model (Browser.parked), so every way of starting
-    /// a transfer — paste, drag, drop from another app — gets the same question.
+    /// a transfer (paste, drag, drop from another app) gets the same question.
     fn drawConflictModal(self: *ViewActions, b: *Browser) void {
         const info = b.conflictInfo() orelse return;
         const title = "Items already exist";
@@ -855,7 +855,7 @@ pub const ViewActions = struct {
     }
 
     fn drawOpenWithModal(self: *ViewActions, b: *Browser) void {
-        // NOTE: the 2nd arg is an ImGuiCond, NOT window flags — passing a WindowFlags
+        // NOTE: the 2nd arg is an ImGuiCond, NOT window flags; passing a WindowFlags
         // value here (256) fails ImGui's SetWindowSizeAllowFlags mask, so the size was
         // silently dropped and the modal auto-fit to near-zero, hiding the whole list.
         c.igSetNextWindowSize(cimgui.vec2(460, 440), c.ImGuiCond_Appearing);

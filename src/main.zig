@@ -1,5 +1,5 @@
 //! ZFD entry point. One binary runs three ways: the standalone tabbed browser
-//! (default), `--pick` (a one-shot chooser that prints the chosen paths — with
+//! (default), `--pick` (a one-shot chooser that prints the chosen paths, with
 //! `--save`/`--multiple`/`--directory`/`--name`/`--folder` modifiers), and
 //! `--service` (the xdg-desktop-portal FileChooser backend, not yet implemented).
 //!
@@ -48,7 +48,7 @@ pub fn main(init: std.process.Init) !void {
     defer gpa.free(settings_path);
     var settings = core.config.load(init.io, gpa, settings_path);
 
-    // Run the chosen GUI mode, then persist prefs once — regardless of mode. `--pick`
+    // Run the chosen GUI mode, then persist prefs once, regardless of mode. `--pick`
     // needs a specific exit code (0 = chosen, 1 = cancelled), applied only AFTER the
     // save, since std.process.exit would skip anything after it.
     // CSD (our own borderless titlebar) is on by default for BOTH the standalone browser
@@ -61,8 +61,8 @@ pub fn main(init: std.process.Init) !void {
             const debug = init.environ_map.get("ZFD_DEBUG") != null;
             // When launched from a terminal (`zfd .`, `xdg-open .`), detach so the shell
             // prompt returns instead of blocking on the window. Only when stdout is a TTY
-            // — a desktop/.desktop launch isn't, and shouldn't be re-parented out of its
-            // systemd scope. Skipped under ZFD_DEBUG (keep the terminal for logs) and
+            // (a desktop/.desktop launch isn't, and shouldn't be re-parented out of its
+            // systemd scope). Skipped under ZFD_DEBUG (keep the terminal for logs) and
             // ZFD_NO_FORK. Safe here: still single-threaded (worker threads + the X11/GLFW
             // connection are created later in gui.run).
             // An explicit --detach always forks, even under ZFD_DEBUG: its callers (the
@@ -113,7 +113,7 @@ pub fn main(init: std.process.Init) !void {
 /// spawned it. Called only in standalone mode, before any worker thread or the X11/GLFW
 /// connection exists, so it forks a single-threaded process. If fork is unavailable we
 /// just stay in the foreground.
-/// stdoutIsTty reports whether stdout is a terminal — our proxy for "launched from a
+/// stdoutIsTty reports whether stdout is a terminal: our proxy for "launched from a
 /// shell" vs. from the desktop. (Not via std.posix.tcgetattr: its termios is smaller
 /// than glibc's, which writes past it and trips the stack protector.)
 fn stdoutIsTty(io: std.Io) bool {
@@ -271,7 +271,7 @@ fn parseArgs(args: std.process.Args) Parsed {
         } else if (std.mem.eql(u8, arg, "--select") or std.mem.eql(u8, arg, "-R")) {
             // "Show in folder" / reveal: file managers are invoked as `<fm> --select
             // <file>` for this (e.g. MEGAsync uses `dolphin --select`/`nautilus
-            // --select`). Take the path as the thing to open — resolveCliTarget turns a
+            // --select`). Take the path as the thing to open; resolveCliTarget turns a
             // file into "open its parent folder + select it". Standalone, not --pick.
             if (it.next()) |path| {
                 if (p.folder.len == 0) p.folder = path;
@@ -292,7 +292,7 @@ fn parseArgs(args: std.process.Args) Parsed {
             p.accept = it.next() orelse "";
             pick = true;
         } else if (!std.mem.startsWith(u8, arg, "-")) {
-            // A positional path (e.g. `zfd .` or the .desktop's `Exec=zfd %F`) — the
+            // A positional path (e.g. `zfd .` or the .desktop's `Exec=zfd %F`) is the
             // folder to open in the standalone browser. First one wins; it does NOT
             // imply --pick. In --pick mode an explicit --folder still takes precedence.
             if (p.folder.len == 0) p.folder = arg;

@@ -1,6 +1,6 @@
 //! Freedesktop XDG base directories, ported from the Go `internal/xdg`. The
-//! resolution logic is pure — it takes the relevant env values as arguments and
-//! returns a path — so it is unit-tested without mutating the process
+//! resolution logic is pure (it takes the relevant env values as arguments and
+//! returns a path), so it is unit-tested without mutating the process
 //! environment. Thin `*FromEnv` wrappers read the real env and delegate.
 //!
 //! Callers own the returned slices and must free them with the same allocator.

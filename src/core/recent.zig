@@ -1,5 +1,5 @@
 //! Recent files: the "Recent" place in the sidebar. A virtual folder listing the
-//! files the desktop recorded as recently used — the freedesktop
+//! files the desktop recorded as recently used: the freedesktop
 //! `recently-used.xbel` (GTK, KDE Frameworks, most apps) plus KDE's older
 //! `RecentDocuments/*.desktop` links. Only local files that still exist are shown,
 //! newest first, capped at `max_items`.

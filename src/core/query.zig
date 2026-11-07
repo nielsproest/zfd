@@ -1,4 +1,4 @@
-//! Search queries: the words typed in the search box, plus Finder-style filters —
+//! Search queries: the words typed in the search box, plus Finder-style filters:
 //! `kind:image` (images, movies, music, documents, pdf, archives, folders, code),
 //! `tag:red` (a colour tag), and the search bar's rules: `modified:` / `created:` with
 //! `<7d` (within the last 7 days; h, d, w, m, y), `>7d` (longer ago), `<2026-01-31`

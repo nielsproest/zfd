@@ -1,9 +1,9 @@
-//! Block volumes for the sidebar's Devices section — the things a file manager lets
+//! Block volumes for the sidebar's Devices section: the things a file manager lets
 //! you mount, open and eject (USB sticks, SD cards, a second disk's partitions). Parsed
 //! from `lsblk -J` so we need no udev/D-Bus linking; the actions themselves go through
 //! `udisksctl` (see devices.zig), which is what makes mounting work without root.
 //!
-//! Pure: JSON text in, a filtered Volume list out — unit-tested. The filter is the whole
+//! Pure: JSON text in, a filtered Volume list out, unit-tested. The filter is the whole
 //! point: a raw lsblk tree is full of things no one wants in a sidebar (swap, ZFS/LVM/
 //! RAID members, the EFI partition, the root filesystem).
 
@@ -16,10 +16,10 @@ pub const Volume = struct {
     size: u64,
     mountpoint: []const u8, // "" when not mounted (owned)
     drive: []const u8, // the whole disk it lives on (for eject / power-off) (owned)
-    removable: bool, // USB/SD/optical — ejectable, and mountable without admin auth
+    removable: bool, // USB/SD/optical: ejectable, and mountable without admin auth
     locked: bool = false, // an encrypted (LUKS) container awaiting its passphrase
     crypt_parent: []const u8 = "", // for an unlocked volume: its LUKS container (owned; "" = none)
-    uuid: []const u8 = "", // filesystem (or LUKS) UUID — stable across plugs, for bookmarks (owned; "" = none)
+    uuid: []const u8 = "", // filesystem (or LUKS) UUID: stable across plugs, for bookmarks (owned; "" = none)
 
     pub fn mounted(v: Volume) bool {
         return v.mountpoint.len > 0;
@@ -164,7 +164,7 @@ fn hasMountpoint(o: std.json.ObjectMap) bool {
 }
 
 /// displayName: the filesystem label, else the GPT partition label, else "<size> <fs>
-/// Volume" — what Dolphin/Nautilus show for an unlabeled stick.
+/// Volume", which is what Dolphin/Nautilus show for an unlabeled stick.
 fn displayName(o: std.json.ObjectMap, buf: []u8) []const u8 {
     const label = str(o, "label");
     if (label.len > 0) return label;

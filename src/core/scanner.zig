@@ -1,4 +1,4 @@
-//! Off-thread directory scanner — the heart of goal 1 (never read the disk on the
+//! Off-thread directory scanner: the heart of goal 1 (never read the disk on the
 //! render thread). Mirrors the Go project's reload pattern: a background worker
 //! does the blocking `readDir` + sort, hands the finished Listing back through a
 //! mutex-guarded slot, and the render thread folds it in per frame via a
@@ -28,7 +28,7 @@ pub const Scanner = struct {
     /// Browser-embedded Scanner, so `orphan` can detach the worker and let the Browser be
     /// freed immediately while a slow in-flight read finishes on its own. Reference-counted
     /// (Scanner + worker each hold one); the last holder out frees it. `alloc`/`io` must
-    /// outlive the worker — they're process-lifetime in this app.
+    /// outlive the worker; they're process-lifetime in this app.
     const Shared = struct {
         io: std.Io,
         alloc: std.mem.Allocator,
@@ -70,7 +70,7 @@ pub const Scanner = struct {
         self.shared = sh;
     }
 
-    /// deinit stops the worker, JOINS it, and frees the shared block. Synchronous — it
+    /// deinit stops the worker, JOINS it, and frees the shared block. Synchronous: it
     /// blocks until the worker's current read returns. Used by tests and tab close. For a
     /// slow in-flight read at process exit, prefer `orphan` so the UI doesn't freeze.
     pub fn deinit(self: *Scanner) void {
@@ -85,7 +85,7 @@ pub const Scanner = struct {
     /// orphan stops the worker but DETACHES it (no join), so teardown never blocks on an
     /// in-flight slow directory read. The detached worker sees `shutdown`, drops its result,
     /// and frees the shared block (last ref out). Safe because the block is heap-allocated
-    /// and refcounted — the Browser embedding this Scanner may be freed immediately after.
+    /// and refcounted, so the Browser embedding this Scanner may be freed immediately after.
     /// Idempotent, and a following `deinit` becomes a no-op.
     pub fn orphan(self: *Scanner) void {
         const sh = self.shared orelse return;
@@ -177,7 +177,7 @@ pub const Scanner = struct {
             // The browser filters + sorts into its view; we deliver raw entries.
             //
             // NFS intermittently fails a directory open/read with a transient
-            // EINVAL/EILSEQ — surfaced by Zig as error.BadPathName — for a directory that
+            // EINVAL/EILSEQ (surfaced by Zig as error.BadPathName) for a directory that
             // is perfectly valid; re-issuing the read a moment later succeeds (which is
             // why manually leaving and re-entering the folder worked). Retry with an
             // exponential backoff (capped) so even a transient that lingers for the better
@@ -231,7 +231,7 @@ pub const Scanner = struct {
     }
 };
 
-/// napMs sleeps for `ms` milliseconds via raw nanosleep — the worker thread has no
+/// napMs sleeps for `ms` milliseconds via raw nanosleep; the worker thread has no
 /// render deadline, so a short backoff between retries of a transient read is free.
 fn napMs(ms: u64) void {
     const ts = std.os.linux.timespec{ .sec = 0, .nsec = @intCast(ms * std.time.ns_per_ms) };
@@ -272,7 +272,7 @@ test "scanner reads a directory off-thread and delivers it via poll" {
         .listing => |l| {
             defer l.deinit(a);
             try testing.expectEqual(@as(usize, 2), l.entries.len);
-            // Order is not asserted here — the worker delivers raw entries; the
+            // Order is not asserted here: the worker delivers raw entries; the
             // browser filters + sorts. Just check both children arrived.
             var saw_dir = false;
             var saw_file = false;
@@ -302,7 +302,7 @@ test "orphan tears down without leaking even with a request in flight" {
     var s = Scanner.init(io, a);
     try s.start();
     try s.request(path);
-    // Detach immediately — the worker may still be mid-read. orphan must not block, and
+    // Detach immediately; the worker may still be mid-read. orphan must not block, and
     // the detached worker must free the shared block (last ref) so the testing allocator
     // reports no leak. We can't join a detached thread, so give it a moment to finish and
     // release; the refcount guarantees exactly one free regardless of who wins the race.

@@ -642,7 +642,7 @@ fn optionField(o: rclone.Option, v: *[value_len]u8, w: f32, provider: []const u8
                 if (!rclone.providerMatches(ch.provider, provider)) continue;
                 c.igPushID_Int(@intCast(k));
                 var lb: [value_len * 2]u8 = undefined;
-                const label = std.mem.printSentinel(&lb, "{s}  \u{2014}  {s}", .{ ch.value, firstLine(ch.help) }, 0) catch "";
+                const label = std.mem.printSentinel(&lb, "{s}: {s}", .{ ch.value, firstLine(ch.help) }, 0) catch "";
                 if (c.igSelectable_Bool(label.ptr, false, 0, cimgui.vec2(0, 0))) setField(v, ch.value);
                 c.igPopID();
             }

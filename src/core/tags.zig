@@ -188,7 +188,7 @@ pub fn resetTable() void {
     table = defaults();
 }
 
-/// lookup is the tag a word names: a tag's current name, or — for the first seven —
+/// lookup is the tag a word names: a tag's current name, or (for the first seven)
 /// its colour's original name, so files tagged before a rename still count. "Grey"
 /// is gray.
 pub fn lookup(word: []const u8) ?Tag {

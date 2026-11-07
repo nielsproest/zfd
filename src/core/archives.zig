@@ -1,6 +1,6 @@
 //! Browsing into archives: opening a zip/tar/7z extracts it (in the background, with
 //! the usual progress) into a private cache folder, and the browser simply shows that
-//! folder — so everything works inside it as in any folder: open, copy out, Quick
+//! folder, so everything works inside it as in any folder: open, copy out, Quick
 //! Look, thumbnails, drag. The Registry remembers which archive each cache folder
 //! came from, so the UI can say where you are, Up at the top leaves to the archive's
 //! own folder, and an archive opened twice is extracted once.

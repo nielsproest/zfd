@@ -357,7 +357,7 @@ pub const Shell = struct {
             self.parseDialogFilters(cfg);
         }
 
-        // Sidebar sources — read in BOTH standalone and dialog/chooser mode so a Save/
+        // Sidebar sources: read in BOTH standalone and dialog/chooser mode so a Save/
         // Open dialog gets the same Places/Bookmarks/Devices navigation (including NFS
         // and other network shares). Devices come from /proc/mounts (read once; hotplug
         // is a TODO).
@@ -461,7 +461,7 @@ pub const Shell = struct {
         self.mounts = mounts_mod.read(self.io, self.alloc) catch &.{};
         self.net_mounts = mounts_mod.readNetwork(self.io, self.alloc); // network + gvfs/kio shares
         // Also list the directories directly under /mnt, /media and /run/media/<user>
-        // so every mount target there is reachable — even ones not in /proc/mounts —
+        // so every mount target there is reachable (even ones not in /proc/mounts),
         // skipping any path already shown above as a real mount.
         var excl = std.ArrayList([]const u8).empty;
         defer excl.deinit(self.alloc);
@@ -609,7 +609,7 @@ pub const Shell = struct {
     }
 
     /// fstabRow draws an fstab mount that isn't mounted (dimmed, like an unmounted
-    /// volume): click mounts it — asking for a password unless fstab lets users — and
+    /// volume): click mounts it (asking for a password unless fstab lets users) and
     /// opens it.
     fn fstabRow(self: *Shell, e: core.fstab.Entry, i: usize) void {
         const d = self.devices orelse return;
@@ -621,7 +621,7 @@ pub const Shell = struct {
         c.igOpenPopupOnItemClick(null, c.ImGuiPopupFlags_MouseButtonLeft);
         if (c.igBeginItemTooltip()) {
             var tb: [900]u8 = undefined;
-            const tip = std.mem.print(&tb, "{s}  \u{00B7}  {s}\n{s}\nNot mounted \u{2014} click to mount it{s}", .{
+            const tip = std.mem.print(&tb, "{s}  \u{00B7}  {s}\n{s}\nNot mounted. Click to mount it{s}", .{
                 e.spec, e.fstype, e.target, if (e.user_mountable) "" else " (asks for your password)",
             }) catch e.target;
             cimgui.textUnformatted(tip);
@@ -666,7 +666,7 @@ pub const Shell = struct {
             var tb: [600]u8 = undefined;
             const tip = std.mem.print(&tb, "{s}  \u{00B7}  {s}  \u{00B7}  {s}\n{s}", .{
                 v.path,                                                                                                                           v.fstype, core.blockdev.humanSize(&sb, v.size),
-                if (v.locked) "Encrypted \u{2014} click to unlock" else if (v.mounted()) v.mountpoint else "Not mounted \u{2014} click to mount",
+                if (v.locked) "Encrypted. Click to unlock" else if (v.mounted()) v.mountpoint else "Not mounted. Click to mount",
             }) catch v.path;
             cimgui.textUnformatted(tip);
             c.igEndTooltip();
@@ -949,7 +949,7 @@ pub const Shell = struct {
         if (c.igBeginItemTooltip()) {
             var tb: [400]u8 = undefined;
             cimgui.textUnformatted(std.mem.print(&tb, "{s} ({s} via rclone)\n{s}", .{
-                r.name, r.kind, if (r.mounted) r.mountpoint else "Not connected \u{2014} click to connect",
+                r.name, r.kind, if (r.mounted) r.mountpoint else "Not connected. Click to connect",
             }) catch r.name);
             c.igEndTooltip();
         }
@@ -1425,7 +1425,7 @@ pub const Shell = struct {
     }
 
     /// onMountedShare: `path` is on a network share, an rclone remote or an fstab
-    /// mount — somewhere a stat might wait on a server.
+    /// mount: somewhere a stat might wait on a server.
     fn onMountedShare(self: *Shell, path: []const u8) bool {
         for (self.net_mounts) |m| if (isUnder(path, m.mountpoint)) return true;
         for (self.remotes) |r| if (r.mountpoint.len > 0 and isUnder(path, r.mountpoint)) return true;
@@ -1708,8 +1708,8 @@ pub const Shell = struct {
     }
 
     pub fn updateTabs(self: *Shell) void {
-        // A finished file op can change folders OTHER tabs are showing — a cut pasted in
-        // tab B empties tab A's folder, a drop onto a tab header fills that tab's — and
+        // A finished file op can change folders OTHER tabs are showing (a cut pasted in
+        // tab B empties tab A's folder, a drop onto a tab header fills that tab's), and
         // there's no inotify, so reload every tab that didn't just reload itself.
         self.syncFolderViews();
         self.pollBg();
@@ -1856,14 +1856,14 @@ pub const Shell = struct {
             c.ImGuiWindowFlags_NoScrollbar | c.ImGuiWindowFlags_NoScrollWithMouse; // the shell window itself never scrolls
 
         // Reset the WM-drag guard once the button is up. Use ImGui's state (which we
-        // fix up with the injected release in startWm), NOT glfwGetMouseButton — that
+        // fix up with the injected release in startWm), NOT glfwGetMouseButton; that
         // stays stuck at PRESS after the WM grab, so the guard would never clear and
         // you'd have to click once before the next move.
         if (self.csd and !c.igIsMouseDown_Nil(0)) self.wm_active = false;
         // Same guard for drag-out (any window mode), but keyed on the PAYLOAD, not the
         // button: after a drag-out the injected release reaches ImGui one frame before
         // the payload elapses, so a button-keyed guard re-armed while the payload was
-        // still live — and the pointer, now over the drop target, was "outside", so a
+        // still live, and the pointer, now over the drop target, was "outside", so a
         // second drag-out fired straight into Discord with no button held.
         if (c.igGetDragDropPayload() == null) self.drag_active = false;
 
@@ -1903,13 +1903,13 @@ pub const Shell = struct {
             if (self.dialog == null) self.drawCustomizeToolbar();
             if (self.dialog == null) self.drawProgressWindow();
             self.drawTabGhost();
-            self.handleFocusKeys(); // Ctrl+L / Ctrl+F — in the chooser too
+            self.handleFocusKeys(); // Ctrl+L / Ctrl+F, in the chooser too
             self.actions.tabs = self.dialog == null; // views offer "Open in New Tab" only with tabs
             self.actions.live = self.liveBrowsers();
             if (self.dialog == null) self.handleShellKeys();
             const b = self.activeBrowser();
-            self.handleMouseNav(b); // mouse back/forward — works in the dialog too
-            self.handleItemSize(b); // Ctrl+scroll — in the dialog too
+            self.handleMouseNav(b); // mouse back/forward; works in the dialog too
+            self.handleItemSize(b); // Ctrl+scroll, in the dialog too
             // Going anywhere (a place, a tab, the path bar) leaves the Network page.
             if (self.net_page and !std.mem.eql(u8, b.location(), self.net_page_loc[0..self.net_page_loc_len])) self.closeNetworkPage();
 
@@ -1953,7 +1953,7 @@ pub const Shell = struct {
             self.body_top = c.igGetCursorScreenPos().y - column_top; // where the sidebar's places start (next frame)
             self.drawLoadingBar(b, column_top + self.body_top - @round(c.igGetStyle().*.ItemSpacing.y * 0.5));
 
-            // The file list only listens to the keyboard when no text field owns it —
+            // The file list only listens to the keyboard when no text field owns it:
             // the path bar, the search box, or (in a Save dialog) the Name field. Without
             // the Name check, typing a filename drives the list (type-ahead, Delete,
             // Enter-to-open, …). name_active is last frame's value (the Name field draws
@@ -1966,7 +1966,7 @@ pub const Shell = struct {
             var keyboard = !self.path_active and !self.search_active and !name_typing and !other_text;
             if (self.dialog) |*d| {
                 // Validate the Save name once per frame: it disables the Save button, gates
-                // the Enter shortcuts below, and — when the name is non-empty but bad —
+                // the Enter shortcuts below, and (when the name is non-empty but bad)
                 // reserves a footer row for the inline reason. null = fine (or not a Save
                 // dialog). Computed here, before the Enter check and the footer reservation
                 // both read it. name_hint is the *visible* case: an empty name still blocks
@@ -1979,11 +1979,11 @@ pub const Shell = struct {
                 };
                 // In a Save dialog, Enter means "save here". When the file list (not the
                 // Name field) owns the keyboard, Enter would otherwise open the
-                // highlighted folder and descend — so intercept it and accept instead.
+                // highlighted folder and descend, so intercept it and accept instead.
                 // Navigate into folders with a double-click or the path bar (Ctrl+L).
                 // Only with a valid name (name_reason == null also rejects empty).
                 // An inline rename (New Folder, F2) draws in the file list *below* this
-                // check, so name_typing doesn't cover it — without this guard, pressing
+                // check, so name_typing doesn't cover it. Without this guard, pressing
                 // Enter to commit the folder name would also accept the Save.
                 const any_popup = c.igIsPopupOpen_Str(null, c.ImGuiPopupFlags_AnyPopup);
                 if (d.cfg.save and keyboard and !any_popup and !self.content.isRenaming() and d.name_reason == null and
@@ -2020,7 +2020,7 @@ pub const Shell = struct {
                 defer self.alloc.free(p);
                 self.newTabAt(p);
             }
-            // Draw the shared view modals once, at shell scope — so OpenPopup and
+            // Draw the shared view modals once, at shell scope, so OpenPopup and
             // BeginPopupModal share an ID scope no matter which view raised the menu.
             self.actions.drawModals(b);
             if (self.actions.takeInfoRequest()) |p| self.spawnInfo(p);
@@ -2036,7 +2036,7 @@ pub const Shell = struct {
             if (b.pendingDropPos() != null) b.commitExternalDrop(b.dir);
             // Free the drag snapshot once ImGui's payload is gone. Deliberately AFTER the
             // body: EndDragDropTarget clears the payload the instant a target accepts, so
-            // on the delivery frame the payload is already null here — by which point every
+            // on the delivery frame the payload is already null here, by which point every
             // drop zone has run and consumed the snapshot it needed. An abandoned drag
             // (released over nothing, or Escape) lands here the same way.
             if (c.igGetDragDropPayload() == null) {
@@ -2304,7 +2304,7 @@ pub const Shell = struct {
 
     /// drawOpsButton is Finder's progress indicator in the toolbar: a ring filling up
     /// with the running operations' progress (and how many there are). Clicking it opens
-    /// the list of operations, each with its bar and a Cancel — like a downloads list.
+    /// the list of operations, each with its bar and a Cancel, like a downloads list.
     /// Nothing floats over the window or gets its own taskbar entry.
     fn drawOpsButton(self: *Shell, sum: OpsSummary) void {
         const h = toolbarH();
@@ -2636,9 +2636,9 @@ pub const Shell = struct {
 
     fn drawSidebar(self: *Shell, b: *Browser) void {
         // Finder's sidebar: Favourites (places + your bookmarks + Trash), Locations
-        // (this computer, devices, network), Tags — grey section titles that fold.
+        // (this computer, devices, network), Tags: grey section titles that fold.
         if (self.sideSection("Favourites", 0)) {
-            // Recent: no dropZone — it isn't a folder anything can be put into.
+            // Recent: no dropZone; it isn't a folder anything can be put into.
             if (self.shows(.recent)) {
                 if (sideItem("Recent", b.in_recent, .recent, false)) b.navigate(core.recent.uri) catch {};
                 if (c.igIsItemClicked(c.ImGuiMouseButton_Middle)) self.newTabAt(core.recent.uri);
@@ -2686,8 +2686,8 @@ pub const Shell = struct {
                     var tb: [1200]u8 = undefined;
                     const how: []const u8 = switch (bm.target()) {
                         .path => if (dead) "\nThis folder isn't there any more" else "",
-                        .remote => if (where == null) "\nOn a network location \u{2014} click to connect" else "",
-                        .device => if (!avail) "\nOn a device that isn't plugged in" else if (where == null) "\nOn a device \u{2014} click to mount" else "",
+                        .remote => if (where == null) "\nOn a network location. Click to connect" else "",
+                        .device => if (!avail) "\nOn a device that isn't plugged in" else if (where == null) "\nOn a device. Click to mount" else "",
                         .search => "",
                     };
                     const tip = if (is_search) blk: {
@@ -2753,7 +2753,7 @@ pub const Shell = struct {
                 if (c.igSmallButton("Dismiss##bmmsg")) self.bm_msg_len = 0;
             }
             if (self.dialog == null) {
-                // Add the folder on screen (or drop folders here) — Finder takes drops too.
+                // Add the folder on screen (or drop folders here); Finder takes drops too.
                 if (sideItem("Add current folder##bmadd", false, .plus, true)) self.addBookmark(b.dir);
                 if (c.igBeginDragDropTarget()) {
                     const payload = c.igAcceptDragDropPayload(table.DRAG_PAYLOAD, 0);
@@ -2782,7 +2782,7 @@ pub const Shell = struct {
             }
             // Drop rows on Trash to trash them (Ctrl+Z undoes it). Internal drags only:
             // an external drop would mean deleting files another app still owns, decided
-            // by nothing but a coordinate hit-test — everything from outside is copied.
+            // by nothing but a coordinate hit-test. Everything from outside is copied.
             if (self.shows(.trash) and c.igBeginDragDropTarget()) {
                 const payload = c.igAcceptDragDropPayload(table.DRAG_PAYLOAD, 0);
                 if (payload != null and payload.*.Delivery) {
@@ -2867,7 +2867,7 @@ pub const Shell = struct {
         return self.side_open[idx];
     }
 
-    /// dropZone makes the item just submitted a drop destination for `dst_dir` —
+    /// dropZone makes the item just submitted a drop destination for `dst_dir`,
     /// covering BOTH kinds of drag: an internal row drag (the ImGui payload) and a
     /// pending external drop from another app (resolved by the position GLFW recorded).
     /// Sidebar places, bookmarks, devices and tab headers all route through here, so a
@@ -2882,7 +2882,7 @@ pub const Shell = struct {
     }
 
     /// dropZoneSpring is dropZone that also reports a drag resting on the item long
-    /// enough to open it (spring-loaded) — for a caller that opens it its own way.
+    /// enough to open it (spring-loaded), for a caller that opens it its own way.
     fn dropZoneSpring(self: *Shell, dst_dir: []const u8) bool {
         const sprung = self.actions.spring.open(dst_dir);
         self.dropZoneAt(dst_dir);
@@ -2960,8 +2960,8 @@ pub const Shell = struct {
     }
 
     /// handleMouseNav wires the mouse thumb buttons to history navigation: X1
-    /// (button 3) = back, X2 (button 4) = forward. Called in EVERY mode — the browser
-    /// and the Save/Open dialog — whereas handleShellKeys (tabs, bookmarks, zoom) is
+    /// (button 3) = back, X2 (button 4) = forward. Called in EVERY mode (the browser
+    /// and the Save/Open dialog), whereas handleShellKeys (tabs, bookmarks, zoom) is
     /// browser-only, which is why the dialog used to ignore the thumb buttons.
     /// Back uses backOrUp so it climbs to the parent when there's no history yet,
     /// instead of silently doing nothing (the toolbar keeps a dedicated Up button).
@@ -2972,7 +2972,7 @@ pub const Shell = struct {
 
     /// handleFocusKeys: Ctrl+L → path bar, Ctrl+F → search box. Separate from
     /// handleShellKeys because that one is browser-only and bails while any widget is
-    /// active — so in the Save/Open chooser (where the Name field usually holds focus)
+    /// active, so in the Save/Open chooser (where the Name field usually holds focus)
     /// Ctrl+F did nothing at all. Jumping between text fields is exactly what these keys
     /// are for, so only an inline rename (whose Ctrl+F/L are just typing) blocks them.
     fn handleFocusKeys(self: *Shell) void {
@@ -2992,7 +2992,7 @@ pub const Shell = struct {
     fn handleShellKeys(self: *Shell) void {
         const b = self.activeBrowser();
         if (self.path_active or self.search_active) return;
-        // While any widget is being edited — notably the inline-rename text box — let it
+        // While any widget is being edited (notably the inline-rename text box), let it
         // keep the keyboard. Otherwise Ctrl+Z here would fire the file-op undo instead of
         // the text field's own undo, and Ctrl+C/W/T/… would hijack normal text editing.
         if (c.igIsAnyItemActive()) return;
@@ -3141,7 +3141,7 @@ pub const Shell = struct {
         const b = Browser.init(self.alloc, self.io, dir, self.trash_home, self.home) catch return null;
         b.shareClipboard(self.clipboard);
         // Inherit the active tab's view prefs so the (global) sort mode is consistent
-        // across tabs — otherwise a new tab silently reverts to Browser.init's default
+        // across tabs; otherwise a new tab silently reverts to Browser.init's default
         // (name ascending) and it looks like the sort was forgotten. Takes effect when
         // the async listing arrives and rebuildView runs.
         b.prefs = self.prefs;
@@ -3162,14 +3162,14 @@ pub const Shell = struct {
     fn closeTab(self: *Shell, idx: usize) void {
         if (idx >= self.tabs.items.len) return;
         // Closing the last tab closes the window, as in browsers and Dolphin (it used to
-        // silently do nothing — the tab's X, Ctrl+W and middle-click all looked broken).
+        // silently do nothing: the tab's X, Ctrl+W and middle-click all looked broken).
         if (self.tabs.items.len == 1) return self.closeWindow();
         const b = self.tabs.orderedRemove(idx);
         self.rememberClosed(b.location());
         if (self.tab_drag == b) self.tab_drag = null;
         if (self.select_tab == b) self.select_tab = null;
         self.letGoLater(b);
-        // Keep `active` on the same tab when one before it goes away, and tell ImGui —
+        // Keep `active` on the same tab when one before it goes away, and tell ImGui;
         // it would otherwise leave no tab selected when the selected one disappears.
         if (idx < self.active) self.active -= 1;
         if (self.active >= self.tabs.items.len) self.active = self.tabs.items.len - 1;
@@ -3349,7 +3349,7 @@ pub const Shell = struct {
     /// tearOffTab handles a tab header released outside the window, Chrome-style: over
     /// another ZFD window the tab moves there; anywhere else it becomes a new window at
     /// the pointer. The lone tab of a window can only merge (detaching it would just be
-    /// the same window again) — and then this window closes, like Chrome.
+    /// the same window again), and then this window closes, like Chrome.
     fn tearOffTab(self: *Shell, b: *Browser) void {
         const idx = self.tabIndex(b) orelse return;
         if (x11.zfdWindowUnderPointer(self.win)) |target| {
@@ -3376,7 +3376,7 @@ pub const Shell = struct {
         self.closeTab(idx);
     }
 
-    /// spawnWindow launches a detached `zfd --pos X,Y <dir>` — a torn-off tab's window,
+    /// spawnWindow launches a detached `zfd --pos X,Y <dir>`: a torn-off tab's window,
     /// placed so its tab strip lands under the pointer.
     fn spawnWindow(self: *Shell, dir: []const u8, pos: [2]i32) bool {
         const exe = std.process.executablePathAlloc(self.io, self.alloc) catch return false;
@@ -3481,7 +3481,7 @@ pub const Shell = struct {
             self.drawWindowButtons(h);
         }
 
-        // Drag the empty part of the titlebar — clip-independent hit-test, exactly like
+        // Drag the empty part of the titlebar: clip-independent hit-test, exactly like
         // the resize grips (which work). !IsAnyItemHovered ⇒ we only move when the click
         // is on blank titlebar, not on a tab or a window button.
         self.dragZone(row_top, cimgui.vec2(row_top.x + full_w - buttons_w, row_top.y + h));
@@ -3506,7 +3506,7 @@ pub const Shell = struct {
             var lbl_buf: [300]u8 = undefined;
             // "###" + the browser's address: the tab's ImGui ID is its IDENTITY, not its
             // label. It used to be "<folder>##<index>", and "##" hashes the visible part
-            // too — so entering a folder (or mouse back/forward) renamed the tab into a
+            // too, so entering a folder (or mouse back/forward) renamed the tab into a
             // brand-new one, ImGui lost the selected tab and fell back to the first.
             const label = std.mem.printSentinel(&lbl_buf, "{s}###tab{x}", .{ if (base.len > 0) base else "/", @intFromPtr(b) }, 0) catch continue;
             var open = true;
@@ -3543,7 +3543,7 @@ pub const Shell = struct {
     }
 
     /// drawDialogTitleRow is the CSD titlebar for the Save/Open chooser: the dialog title
-    /// on the left, the window buttons pinned right, and a draggable gap between — no tab
+    /// on the left, the window buttons pinned right, and a draggable gap between; no tab
     /// strip (a chooser is single-folder). Mirrors drawTitleRow's right-side buttons and
     /// drag hit-test; only called when csd is on and a dialog is active.
     fn drawDialogTitleRow(self: *Shell) void {
@@ -3576,7 +3576,7 @@ pub const Shell = struct {
         c.igDummy(cimgui.vec2(0, @round(c.igGetFontSize() * 0.25))); // Finder's roomy band
         const fs = c.igGetFontSize();
         // Back = history back, or climb to the parent when there's no history to go back
-        // to (Up is folded in — no separate button). Forward re-descends. Disabled only
+        // to (Up is folded in; no separate button). Forward re-descends. Disabled only
         // at the filesystem root with no history, where there's genuinely nowhere to go.
         if (toolButton("##back", .back, self.net_page or b.canBackOrUp(), false, "Back (Alt+Left)")) {
             if (self.net_page) self.closeNetworkPage() else b.backOrUp();
@@ -3614,7 +3614,7 @@ pub const Shell = struct {
         const avail = c.igGetContentRegionAvail().x;
         const right_x = c.igGetCursorPosX() + avail - right_w;
 
-        // The folder's name — click it for the enclosing folders. A typed path goes in
+        // The folder's name: click it for the enclosing folders. A typed path goes in
         // the path bar at the bottom; only with that bar hidden does it take this spot.
         if (self.path_edit and !self.showsBar(.path_bar)) {
             self.drawPathField(b, right_w + gap);
@@ -3754,7 +3754,7 @@ pub const Shell = struct {
         const dl = c.igGetWindowDrawList();
         drawMagnifier(dl, fmin.x + pad.x, fmin.y + (h - glyph) * 0.5, glyph, c.igGetColorU32_Vec4(theme.dim()));
         // It stays open until its clear button (✕) is clicked, which also ends the
-        // search — or Escape in an empty field.
+        // search, or Escape in an empty field.
         const xs = @round(h * 0.62);
         if (sw > xs * 3) {
             c.igSetCursorScreenPos(cimgui.vec2(fmax.x - xs - pad.x * 0.5, fmin.y + (h - xs) * 0.5));
@@ -4000,7 +4000,7 @@ pub const Shell = struct {
         self.saveBookmarks();
     }
 
-    /// drawWindowButtons draws minimize, maximize and close at the cursor — the usual
+    /// drawWindowButtons draws minimize, maximize and close at the cursor, in the usual
     /// Linux/Windows order and place (the right end of the menu bar); close turns red
     /// on hover. Glyphs are drawn, so they look the same in the blocky font.
     fn drawWindowButtons(self: *Shell, h: f32) void {
@@ -4328,7 +4328,7 @@ pub const Shell = struct {
         if (!c.igBegin(title.ptr, &self.settings_open, c.ImGuiWindowFlags_NoCollapse | c.ImGuiWindowFlags_AlwaysAutoResize | c.ImGuiWindowFlags_NoSavedSettings)) return;
         if (c.igIsKeyPressed_Bool(c.ImGuiKey_Escape, false) and c.igIsWindowFocused(c.ImGuiFocusedFlags_RootAndChildWindows)) self.settings_open = false;
 
-        // The page buttons: icon over label, centred, the current one on a soft pill —
+        // The page buttons: icon over label, centred, the current one on a soft pill,
         // on the title bar's shade, one band with it as in Finder, a hairline under.
         const content_w = fs * 30;
         const btn_w = fs * 5.2;
@@ -4791,7 +4791,7 @@ pub const Shell = struct {
         }
         c.igSetNextWindowPos(center, c.ImGuiCond_Appearing, cimgui.vec2(0.5, 0.5));
         if (c.igBeginPopupModal("About ZFD", null, c.ImGuiWindowFlags_AlwaysAutoResize)) {
-            cimgui.textUnformatted("ZFD \u{2014} a fast file manager and file dialog");
+            cimgui.textUnformatted("ZFD: a fast file manager and file dialog");
             c.igPushStyleColor_Vec4(c.ImGuiCol_Text, theme.dim());
             cimgui.textUnformatted("Zig + Dear ImGui. Also serves the desktop's file dialogs (xdg-desktop-portal).");
             c.igPopStyleColor(1);
@@ -4854,7 +4854,7 @@ pub const Shell = struct {
     }
 
     /// drawTitleMenu lists the current folder and every folder enclosing it, nearest
-    /// first, down to the computer — Finder's title-bar path menu. Middle-click opens
+    /// first, down to the computer: Finder's title-bar path menu. Middle-click opens
     /// one in a new tab.
     fn drawTitleMenu(self: *Shell, b: *Browser) void {
         var disp_buf: [std.fs.max_path_bytes * 2]u8 = undefined;
@@ -4939,8 +4939,8 @@ pub const Shell = struct {
         if (c.igSliderInt("##voicon", &pct, @intFromFloat(s.min * 100), @intFromFloat(s.max * 100), "%d%%", 0)) s.v.* = @as(f32, @floatFromInt(pct)) / 100;
     }
 
-    /// drawBottomBar is Finder's path bar (the breadcrumbs) with the status line —
-    /// item count, selection, free space, errors — under it.
+    /// drawBottomBar is Finder's path bar (the breadcrumbs) with the status line
+    /// (item count, selection, free space, errors) under it.
     fn drawBottomBar(self: *Shell, b: *Browser) void {
         const path = self.showsBar(.path_bar);
         const status = self.showsBar(.status_bar);
@@ -5002,7 +5002,7 @@ pub const Shell = struct {
         c.igSetNextItemWidth(-right_w);
         // CallbackAlways keeps an inline directory suggestion in sync as you type;
         // CallbackCompletion makes Tab accept it (instead of moving focus). See
-        // pathAutoComplete. EnterReturnsTrue navigates to whatever's in the box — which,
+        // pathAutoComplete. EnterReturnsTrue navigates to whatever's in the box, which,
         // with a suggestion showing, is the full completed path (Enter accepts too).
         const pflags = c.ImGuiInputTextFlags_EnterReturnsTrue |
             c.ImGuiInputTextFlags_CallbackAlways |
@@ -5021,7 +5021,7 @@ pub const Shell = struct {
                 typed;
             if (target.len > 0) b.navigate(target) catch {};
             // EnterReturnsTrue deactivates the input on submit, so path_active would
-            // flip false this frame and re-enable the list's keyboard — which then sees
+            // flip false this frame and re-enable the list's keyboard, which then sees
             // the SAME Enter and opens the highlighted row, landing a folder too deep.
             // Keep the list's keys suppressed for this frame.
             self.path_active = true;
@@ -5162,7 +5162,7 @@ pub const Shell = struct {
     }
     /// startWm kicks off a WM move/resize once per press. The guard (`wm_active`,
     /// cleared when the real mouse button goes up) stops us from re-sending
-    /// _NET_WM_MOVERESIZE every frame — the flood that caused the lag.
+    /// _NET_WM_MOVERESIZE every frame (the flood that caused the lag).
     fn startWm(self: *Shell, dir: x11.Direction) void {
         if (self.wm_active) return;
         self.wm_active = true;
@@ -5218,7 +5218,7 @@ pub const Shell = struct {
 
     fn maybeDragOut(self: *Shell, b: *Browser) void {
         if (self.win == null) return;
-        if (self.drag_active) return; // already dragged out this press — wait for the button to lift
+        if (self.drag_active) return; // already dragged out this press; wait for the button to lift
         const payload = c.igGetDragDropPayload();
         if (payload == null) return;
         // Only OUR row drag becomes an XDND drag-out. GetDragDropPayload reports any live
@@ -5244,7 +5244,7 @@ pub const Shell = struct {
             // Percent-encode the path (the same RFC-3986 encoder .trashinfo uses). A raw
             // "Holiday #2/my photo.png" is not a valid URI: receivers truncate it at the
             // '#' or choke on the space, which is what made drag-out hand some apps the
-            // wrong file — or nothing at all.
+            // wrong file, or nothing at all.
             const enc = core.fsops.percentEncodePath(b.alloc, p) catch return;
             defer b.alloc.free(enc);
             uris.appendSlice(b.alloc, "file://") catch return;
@@ -5258,7 +5258,7 @@ pub const Shell = struct {
         x11.startDragOut(self.win, uris.items, plain.items);
         // startDragOut's X pointer grab swallowed the mouse-button release, so GLFW/ImGui
         // never saw it and still believe button 0 is held. That keeps ImGui's drag-drop
-        // payload "live", so without this we'd re-enter startDragOut every frame — the drop
+        // payload "live", so without this we'd re-enter startDragOut every frame, and the drop
         // target keeps getting XdndEnter and never lets go ("Discord keeps asking for
         // files"). Inject the release so ImGui ends the drag exactly once, exactly as
         // startWm does after a WM move/resize grab.
@@ -5283,7 +5283,7 @@ pub const Shell = struct {
     ///
     /// Refuses when the current folder failed to load (err_name set): the Save path is
     /// `<current dir>/<name>`, and if we never successfully read that directory we can't
-    /// trust it exists/is-writable — handing the path back anyway is how a save landed in
+    /// trust it exists/is-writable: handing the path back anyway is how a save landed in
     /// an unverified folder after an NFS BadPathName. The user sees the error + a Retry
     /// button and can re-load the folder (usually a transient) before saving.
     fn requestSave(self: *Shell, d: *Dialog) void {
@@ -5302,7 +5302,7 @@ pub const Shell = struct {
     }
 
     /// drawOverwriteModal shows the "replace existing file?" confirmation before a Save
-    /// clobbers a file — the same guard native Save dialogs give you. Replace finishes
+    /// clobbers a file: the same guard native Save dialogs give you. Replace finishes
     /// the dialog; Cancel returns to it.
     fn drawOverwriteModal(_: *Shell, d: *Dialog) void {
         if (d.confirm_overwrite) {
@@ -5353,7 +5353,7 @@ pub const Shell = struct {
             @memcpy(d.name_buf[0..n], name[0..n]);
             d.name_buf[n] = 0;
             // The Name field is usually the ACTIVE widget, and ImGui edits its own copy
-            // of an active field's text — a write to name_buf alone would be ignored.
+            // of an active field's text, so a write to name_buf alone would be ignored.
             // Drop the activation so the field reloads, then focus it again.
             c.igClearActiveID();
             d.name_select = true; // select the stem, ready to type over it
@@ -5398,13 +5398,13 @@ pub const Shell = struct {
 
 /// pathAutoComplete is the address bar's InputText callback (Explorer-style inline
 /// completion). Two events:
-///   • CallbackCompletion (Tab): accept the current suggestion — collapse the selection
+///   • CallbackCompletion (Tab): accept the current suggestion; collapse the selection
 ///     and drop the cursor at the end, so a following '/' suggests the next level.
 ///   • CallbackAlways: whenever the *typed* prefix (the buffer minus our selected tail)
 ///     grows, look up the matching subdirectory and insert its remaining letters as a
 ///     selected tail. Typing overwrites the selection; backspacing removes it and, since
 ///     the prefix then shrank rather than grew, we don't fight the user by re-suggesting.
-/// UserData is the *Shell. One readdir per keystroke on the render thread — deliberate
+/// UserData is the *Shell. One readdir per keystroke on the render thread, deliberate
 /// (interactive completion needs a synchronous answer); it's the cheap no-stat pass.
 fn pathAutoComplete(raw: [*c]c.ImGuiInputTextCallbackData) callconv(.c) c_int {
     const data: *cimgui.InputTextCallbackData = @ptrCast(@alignCast(raw));
@@ -5424,8 +5424,8 @@ fn pathAutoComplete(raw: [*c]c.ImGuiInputTextCallbackData) callconv(.c) c_int {
         return 0;
     }
 
-    // CallbackAlways: the typed prefix excludes our auto tail — a selection reaching the
-    // buffer end while a suggestion is live.
+    // CallbackAlways: the typed prefix excludes our auto tail (a selection reaching the
+    // buffer end while a suggestion is live).
     const has_sel = data.SelectionStart != data.SelectionEnd;
     const sel_to_end = data.SelectionEnd == data.BufTextLen;
     const typed_len: usize = if (self.ac_active and has_sel and sel_to_end)
@@ -5506,7 +5506,7 @@ fn drawStatus(self: *Shell, b: *Browser) void {
         c.igPushStyleColor_Vec4(c.ImGuiCol_Text, theme.err());
         cimgui.textUnformatted(msg);
         c.igPopStyleColor(1);
-        // Re-load the same folder on demand — NFS BadPathName is usually transient, so a
+        // Re-load the same folder on demand. NFS BadPathName is usually transient, so a
         // Retry beats forcing the user to navigate away and back (and Save stays blocked
         // until the folder reads cleanly).
         c.igSameLine(0, -1);
@@ -6324,7 +6324,7 @@ fn plural(n: usize) []const u8 {
     return if (n == 1) "" else "s";
 }
 
-/// drawFilterCombo shows the chooser's file-type filter dropdown — "All files (*)"
+/// drawFilterCombo shows the chooser's file-type filter dropdown: "All files (*)"
 /// plus each app-provided filter. Picking one re-filters the current tab's view.
 fn drawFilterCombo(self: *Shell) void {
     if (self.dlg_filters.len == 0) return;
@@ -6352,7 +6352,7 @@ fn selectFilter(self: *Shell, idx: usize) void {
     const f: ?core.filter.FileFilter = if (idx == 0) null else self.dlg_filters[idx - 1];
     self.activeBrowser().setActiveFilter(f);
     // Save mode: retarget the filename's extension to the chosen filter's (like every
-    // native save dialog — pick "PNG (*.png)" and "doc.txt" becomes "doc.png").
+    // native save dialog: pick "PNG (*.png)" and "doc.txt" becomes "doc.png").
     if (self.dialog) |*d| {
         if (d.cfg.save) {
             if (f) |ff| if (ff.primaryExt()) |newext| retargetSaveExt(self, d, newext);
@@ -6424,7 +6424,7 @@ fn drawFooter(self: *Shell, d: *Dialog) void {
     }
     c.igSameLine(0, -1);
     // In save mode, grey out Save while the name is invalid (empty or an illegal leaf)
-    // so a bad path can never be handed back — the reason shows on its own row below.
+    // so a bad path can never be handed back; the reason shows on its own row below.
     const block_accept = d.cfg.save and d.name_reason != null;
     if (block_accept) c.igBeginDisabled(true);
     if (c.igButton(accept.ptr, cimgui.vec2(w_accept, 0))) {
@@ -6437,7 +6437,7 @@ fn drawFooter(self: *Shell, d: *Dialog) void {
     if (block_accept) c.igEndDisabled();
 
     // Inline reason under the Name row for a non-empty but illegal name (e.g. a slash).
-    // An empty name leaves Save greyed but shows nothing — no nagging on a blank open.
+    // An empty name leaves Save greyed but shows nothing (no nagging on a blank open).
     // The extra row is reserved in draw() (name_hint) so this never clips the window.
     if (d.cfg.save and nameNonEmpty(d)) if (d.name_reason) |r| {
         c.igPushStyleColor_Vec4(c.ImGuiCol_Text, theme.err());
@@ -6450,7 +6450,7 @@ fn nameNonEmpty(d: *Dialog) bool {
     return std.mem.trim(u8, std.mem.sliceTo(&d.name_buf, 0), " \t").len > 0;
 }
 
-/// drawNameContextMenu is the right-click menu for the Save dialog's Name field — an
+/// drawNameContextMenu is the right-click menu for the Save dialog's Name field, as an
 /// ImGui InputText has none built in. It works on the whole field (a filename is a short
 /// single leaf). Cut/Paste/Clear then re-focus the field so ImGui reloads the edited
 /// buffer (it caches the text of the *active* input, so an external edit only takes
@@ -6481,7 +6481,7 @@ fn copyToClipboard(s: []const u8) void {
 }
 
 /// refocusName re-focuses the Name input next frame (so ImGui reloads the buffer) without
-/// re-selecting the stem — used after a context-menu edit.
+/// re-selecting the stem; used after a context-menu edit.
 fn refocusName(d: *Dialog) void {
     d.name_focus = true;
     d.name_select = false;
@@ -6493,7 +6493,7 @@ fn clearName(d: *Dialog) void {
 }
 
 /// setNameSanitized replaces the Name buffer with `src`, keeping just the first line and
-/// dropping path separators and control characters — a save target is a single leaf name.
+/// dropping path separators and control characters: a save target is a single leaf name.
 fn setNameSanitized(d: *Dialog, src: []const u8) void {
     var n: usize = 0;
     for (src) |ch| {

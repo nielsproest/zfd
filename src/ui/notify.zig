@@ -1,5 +1,5 @@
 //! Desktop notifications over D-Bus (org.freedesktop.Notifications), with one
-//! clickable action — e.g. "USB stick connected [Open]". Talks to the session bus with
+//! clickable action, e.g. "USB stick connected [Open]". Talks to the session bus with
 //! sd-bus (already linked for the portal), so it needs no notify-send/libnotify.
 //!
 //! Each notification gets a short-lived detached thread: it sends Notify, then waits

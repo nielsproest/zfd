@@ -6,7 +6,7 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     // The pure core: no C, no GLFW/X11/ImGui. Its own module, so `zig build
-    // test-core` compiles and tests the logic with zero GUI dependencies — the
+    // test-core` compiles and tests the logic with zero GUI dependencies: the
     // strict layering (GoFileDialog goal 2) enforced by the build graph itself.
     const core = b.addModule("core", .{
         .root_source_file = b.path("src/core/core.zig"),

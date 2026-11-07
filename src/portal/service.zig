@@ -7,20 +7,20 @@
 //! Requests are ASYNCHRONOUS: the method call is answered when its picker exits, and
 //! the bus loop keeps running meanwhile. Each request also exports the portal's
 //! org.freedesktop.impl.portal.Request object at its handle path, whose Close kills
-//! the picker. xdg-desktop-portal calls Close when the requesting app disappears — the
+//! the picker. xdg-desktop-portal calls Close when the requesting app disappears. The
 //! old synchronous loop blocked inside wait() for the dialog, so a killed app left an
 //! orphaned picker holding the whole daemon hostage until someone killed it.
 //!
 //! The same daemon also serves org.freedesktop.FileManager1 (ShowFolders / ShowItems /
-//! ShowItemProperties) — the standard "reveal a file in its folder" D-Bus API used by
+//! ShowItemProperties), the standard "reveal a file in its folder" D-Bus API used by
 //! browsers, editors, etc. Each call launches a detached `zfd [--select] <path>` window.
 //! That name is requested best-effort: if another file manager (Dolphin, Nautilus, …)
 //! already owns it we simply don't provide it, and the FileChooser half is unaffected.
-//! There's no FileManager1 .service file on purpose — a second D-Bus activation would
+//! There's no FileManager1 .service file on purpose: a second D-Bus activation would
 //! start a rival daemon that can't take the (fatal) portal name; instead reveal works
 //! whenever this daemon is already running (the portal keeps it alive).
 //!
-//! Uses sd_bus_add_object with a raw message callback (no vtable macros — those
+//! Uses sd_bus_add_object with a raw message callback (no vtable macros; those
 //! don't survive translate-c). NEEDS a session bus + a real portal round-trip to
 //! verify; built and structured but not runtime-tested here.
 
@@ -32,7 +32,7 @@ pub const sd = @import("c_sdbus"); // src/c/sdbus.h, translated in build.zig
 const bus_name = "org.freedesktop.impl.portal.desktop.zfd";
 const bus_path = "/org/freedesktop/portal/desktop";
 
-// org.freedesktop.FileManager1 — the standard "reveal in folder" interface.
+// org.freedesktop.FileManager1: the standard "reveal in folder" interface.
 const fm_name = "org.freedesktop.FileManager1";
 const fm_path = "/org/freedesktop/FileManager1";
 
@@ -73,7 +73,7 @@ pub fn run(io: std.Io, gpa: std.mem.Allocator) !void {
     if (sd.sd_bus_request_name(bus, bus_name, 0) < 0) return error.RequestName;
 
     // Also serve org.freedesktop.FileManager1 (reveal-in-folder). Best-effort: another
-    // file manager may already own the name, in which case we just don't provide it —
+    // file manager may already own the name, in which case we just don't provide it;
     // the FileChooser backend above must still work.
     var fm_slot: ?*sd.sd_bus_slot = null;
     _ = sd.sd_bus_add_object(bus, &fm_slot, fm_path, fileManagerHandler, null);
@@ -133,7 +133,7 @@ fn fileManagerHandler(m: ?*sd.sd_bus_message, userdata: ?*anyopaque, ret_error: 
     const name = std.mem.span(member);
     // ShowItems + ShowItemProperties reveal the file (open its parent, select it);
     // ShowFolders opens each folder directly. We don't have a properties-only view, so
-    // ShowItemProperties just reveals — better than ignoring it.
+    // ShowItemProperties just reveals, which is better than ignoring it.
     if (std.mem.eql(u8, name, "ShowItems")) return handleShow(m, .select);
     if (std.mem.eql(u8, name, "ShowItemProperties")) return handleShow(m, .select);
     if (std.mem.eql(u8, name, "ShowFolders")) return handleShow(m, .folder);
@@ -337,7 +337,7 @@ fn logReply(what: []const u8, code: u8, n: usize) void {
     std.debug.print("portal: picker exited {d}: answered {s}, {d} item(s)\n", .{ code, what, n });
 }
 
-/// readFd reads the whole memfd (from offset 0 — the child's writes advanced only its
+/// readFd reads the whole memfd (from offset 0: the child's writes advanced only its
 /// own shared offset, so pread sidesteps it). Capped at 1 MiB.
 fn readFd(a: std.mem.Allocator, fd: i32) []const u8 {
     if (fd < 0) return "";
@@ -426,7 +426,7 @@ fn readAy(m: ?*sd.sd_bus_message, a: std.mem.Allocator) []const u8 {
     return out;
 }
 
-/// readFileList reads a variant of "a(ay)" — the SaveFiles requested names.
+/// readFileList reads a variant of "a(ay)": the SaveFiles requested names.
 fn readFileList(m: ?*sd.sd_bus_message, a: std.mem.Allocator) [][]const u8 {
     var list = std.ArrayList([]const u8).empty;
     if (sd.sd_bus_message_enter_container(m, 'v', "a(ay)") < 0) return &.{};
@@ -447,7 +447,7 @@ fn readFileList(m: ?*sd.sd_bus_message, a: std.mem.Allocator) [][]const u8 {
     return list.toOwnedSlice(a) catch &.{};
 }
 
-/// readFilters reads the FileChooser `filters` option — a variant of `a(sa(us))`:
+/// readFilters reads the FileChooser `filters` option, a variant of `a(sa(us))`:
 /// each filter is a name plus a list of (type, pattern) where type 0 = glob and
 /// type 1 = MIME. We flatten each to a "Name|glob1 glob2 …" spec (converting MIME
 /// patterns to globs) for `--pick --filter`.
@@ -493,7 +493,7 @@ fn readOneFilter(m: ?*sd.sd_bus_message, a: std.mem.Allocator) ?[]const u8 {
     return buf.toOwnedSlice(a) catch null;
 }
 
-/// readCurrentFilter reads the `current_filter` option — a variant of `(sa(us))` — and
+/// readCurrentFilter reads the `current_filter` option (a variant of `(sa(us))`) and
 /// returns just its name (owned); we only need it to preselect the matching filter.
 fn readCurrentFilter(m: ?*sd.sd_bus_message, a: std.mem.Allocator) []const u8 {
     if (sd.sd_bus_message_enter_container(m, 'v', "(sa(us))") < 0) return "";

@@ -1,4 +1,4 @@
-//! File-type filters for the chooser dialog — a portal FileChooser is expected to
+//! File-type filters for the chooser dialog. A portal FileChooser is expected to
 //! honor the `filters` option (an app asks for "PDF files (*.pdf)", "Images", …), so
 //! this turns filter *specs* into globs and matches names against them. Two producers
 //! feed it: the portal service (MIME/glob patterns from the D-Bus request → globs via
@@ -28,7 +28,7 @@ pub const FileFilter = struct {
 
     /// primaryExt returns the filter's representative extension (".png" for
     /// {"Images", ["*.png", ...]}) as a slice into the matching glob, or null when
-    /// there's no single concrete extension ("*", "*.*") — callers then leave a
+    /// there's no single concrete extension ("*", "*.*"); callers then leave a
     /// save name's extension alone. Case is preserved from the glob.
     pub fn primaryExt(self: FileFilter) ?[]const u8 {
         for (self.globs) |g| {
@@ -90,7 +90,7 @@ pub fn parseFilterSpec(alloc: std.mem.Allocator, spec: []const u8) !?FileFilter 
     return FileFilter{ .name = name, .globs = try globs.toOwnedSlice(alloc) };
 }
 
-/// mimeToGlobs maps a portal MIME-type filter to file globs (best effort — we don't
+/// mimeToGlobs maps a portal MIME-type filter to file globs (best effort: we don't
 /// read the shared MIME database). Unknown types map to "*" so we never hide files the
 /// app expected to be selectable. The returned slices are static.
 pub fn mimeToGlobs(mime: []const u8) []const []const u8 {

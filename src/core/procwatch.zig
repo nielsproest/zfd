@@ -2,7 +2,7 @@
 //! /proc (as the `progress` tool does). Once a second a worker looks at your own
 //! processes:
 //!   - a copy tool (cp, mv, dd, rsync, tar, …): the file it reads and how far it got
-//!     (fdinfo's pos against the file's size) — an outside operation to show;
+//!     (fdinfo's pos against the file's size): an outside operation to show;
 //!   - when asked (a folder shown has some): which `.part` / `.crdownload` files are
 //!     open for writing, i.e. still being downloaded. One nobody has open is left over
 //!     from a browser that quit or died.
@@ -47,7 +47,7 @@ pub const Writer = struct {
     }
 
     /// stoppable: a download program of its own (yt-dlp, wget, …), which can be
-    /// stopped without harm — unlike a browser, where only its own Cancel is safe.
+    /// stopped without harm, unlike a browser, where only its own Cancel is safe.
     pub fn stoppable(w: *const Writer) bool {
         for ([_][]const u8{ "yt-dlp", "youtube-dl", "wget", "wget2", "curl", "aria2c", "axel", "gallery-dl", "rclone", "lftp" }) |t| {
             if (std.mem.eql(u8, w.comm(), t)) return true;

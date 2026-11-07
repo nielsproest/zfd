@@ -1,5 +1,5 @@
 //! Folder sizes for the list view (View > Show Folder Sizes): the total of the files
-//! directly inside each folder, measured on a worker thread. Never recursive — a
+//! directly inside each folder, measured on a worker thread. Never recursive: a
 //! subfolder's contents don't count, so a 1 TB tree costs one directory listing, not a
 //! walk of all of it (Finder leans on Spotlight's index for its recursive sizes; we
 //! have none). Keyed by path + the folder's mtime, so adding or removing a file

@@ -1,7 +1,7 @@
-//! Treemap representation of a Browser — a WinDirStat-like disk-usage view. It is a
+//! Treemap representation of a Browser: a WinDirStat-like disk-usage view. It is a
 //! *representation of the same data* as the file table: it draws the browser's VIEW
 //! entries (so it respects the hidden/search filter), sizes them by their recursive
-//! total (streamed from core/usage.zig), and shares the browser's selection — click
+//! total (streamed from core/usage.zig), and shares the browser's selection: click
 //! a tile and the corresponding row selects too. Double-click a folder to drill in.
 
 const std = @import("std");
@@ -103,7 +103,7 @@ pub fn draw(b: *Browser, act: *actions.ViewActions) void {
 
 const Rect = struct { x: f32, y: f32, w: f32, h: f32 };
 const border_col: c.ImU32 = 0xFF1A1A1A;
-const text_col: c.ImU32 = 0xFF101010; // dark text — tiles are light
+const text_col: c.ImU32 = 0xFF101010; // dark text; tiles are light
 
 fn sizeDesc(sizes: []const u64, a: usize, b: usize) bool {
     return sizes[a] > sizes[b];

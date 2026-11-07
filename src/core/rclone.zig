@@ -1,5 +1,5 @@
 //! Network locations through rclone: every remote configured in rclone (SFTP, SMB,
-//! WebDAV, FTP, S3, Google Drive, … — whatever `rclone config` set up) appears in the
+//! WebDAV, FTP, S3, Google Drive, …: whatever `rclone config` set up) appears in the
 //! sidebar, and opening one mounts it with `rclone mount` under the runtime dir, after
 //! which it's an ordinary folder. "Connect to Server" adds any kind rclone has: its
 //! backends and their settings come from rclone itself (`config/providers`), and

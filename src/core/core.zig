@@ -1,8 +1,8 @@
-//! The pure, GUI-free core of ZFD — filesystem/name logic, globbing, XDG paths,
+//! The pure, GUI-free core of ZFD: filesystem/name logic, globbing, XDG paths,
 //! and (in time) ignore rules, scanning, config, and the portal option decoding.
 //! Ported from GoFileDialog's core packages and kept strictly free of any C, SDL,
 //! X11, or ImGui dependency, so it compiles and tests on its own (`zig build
-//! test-core`). That's the same strict layering the Go project enforces — and,
+//! test-core`). That's the same strict layering the Go project enforces, and,
 //! since a Zig-native rewrite is the whole point, this module's tests double as
 //! the conformance suite any future backend must also satisfy.
 

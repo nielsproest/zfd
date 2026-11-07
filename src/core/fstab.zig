@@ -1,5 +1,5 @@
-//! /etc/fstab entries that aren't mounted right now — a NAS share marked noauto, a
-//! data disk that failed at boot — so the sidebar can offer "Mount" for them like a
+//! /etc/fstab entries that aren't mounted right now (a NAS share marked noauto, a
+//! data disk that failed at boot), so the sidebar can offer "Mount" for them like a
 //! plugged-in USB stick. System mounts (/, /boot, /home, …), swap and pseudo
 //! filesystems are left out. GUI-free; parsing is unit-tested.
 
