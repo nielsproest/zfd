@@ -350,6 +350,13 @@ fn startupId(buf: []u8) ?[]const u8 {
 
 fn onViewportWindow(w: ?*anyopaque) callconv(.c) void {
     x11.makeChildWindow(w, g_main_window);
+    // A window dragged out of the main one (or the tab ghost) gets an OS window of
+    // its own. It's shown before it's drawn, and a frame drawn while X is still
+    // mapping it can be lost: draw the next few no matter what, or it stays blank
+    // (a blink) until something in it changes. The WM asking for a redraw counts
+    // for it as it does for the main window.
+    g_new_window_frames = 4;
+    _ = c.glfwSetWindowRefreshCallback(@ptrCast(w), onRefresh);
 }
 
 /// Tm is glibc's struct tm, for localtime_r.
@@ -469,8 +476,9 @@ const Backend = struct {
         // upload always draws.
         const resizing_now = x11.resizeSyncPending();
         const h = frameHash(fb_w, fb_h);
-        const redraw = g_redraw or resizing_now or h == null or h.? != self.last_frame;
+        const redraw = g_redraw or g_new_window_frames > 0 or resizing_now or h == null or h.? != self.last_frame;
         g_redraw = false;
+        g_new_window_frames -|= 1;
         if (!redraw) {
             c.igUpdatePlatformWindows(); // (windows still open, move and close)
             c.glfwMakeContextCurrent(self.window);
@@ -510,6 +518,10 @@ const Backend = struct {
 /// g_redraw: the WM asked for the window to be drawn again (it was uncovered,
 /// mapped, …), so the next frame is drawn even if nothing in it changed.
 var g_redraw = true;
+
+/// g_new_window_frames: frames still to draw regardless after a new OS window for a
+/// dragged-out ImGui window appeared (see onViewportWindow).
+var g_new_window_frames: u8 = 0;
 
 fn onRefresh(_: ?*c.GLFWwindow) callconv(.c) void {
     g_redraw = true;
