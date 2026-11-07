@@ -4,6 +4,7 @@
 #include "imgui.h"
 #include "imgui_internal.h"
 #include <GL/gl.h>
+#include <GLFW/glfw3.h>
 #include <cstdio>
 #include <cstdint>
 #include <cstring>
@@ -156,15 +157,31 @@ extern "C" bool zfd_viewports_enabled(void) {
 typedef void (*zfd_viewport_cb)(void *glfw_window, int flags);
 static zfd_viewport_cb g_vp_cb = nullptr;
 static void (*g_vp_orig_create)(ImGuiViewport *) = nullptr;
+// Their framebuffers are transparent, and cleared to transparent, so what ZFD draws
+// rounded in them (Quick Look's corners, a menu's) is rounded on screen too: ImGui
+// itself draws a window that has an OS window to itself square, over opaque black.
 static void zfd_vp_create(ImGuiViewport *vp) {
+    glfwWindowHint(GLFW_TRANSPARENT_FRAMEBUFFER, GLFW_TRUE);
     g_vp_orig_create(vp);
+    glfwWindowHint(GLFW_TRANSPARENT_FRAMEBUFFER, GLFW_FALSE);
     if (g_vp_cb && vp->PlatformHandle) g_vp_cb(vp->PlatformHandle, (int)vp->Flags);
+}
+static void (*g_vp_orig_render)(ImGuiViewport *, void *) = nullptr;
+static void zfd_vp_render(ImGuiViewport *vp, void *arg) {
+    vp->Flags |= ImGuiViewportFlags_NoRendererClear; // (the backend's clear is opaque black)
+    glClearColor(0, 0, 0, 0);
+    glClear(GL_COLOR_BUFFER_BIT);
+    g_vp_orig_render(vp, arg);
 }
 extern "C" void zfd_hook_viewport_windows(zfd_viewport_cb cb) {
     ImGuiPlatformIO &pio = ImGui::GetPlatformIO();
     if (!pio.Platform_CreateWindow) return;
     g_vp_orig_create = pio.Platform_CreateWindow;
     pio.Platform_CreateWindow = zfd_vp_create;
+    if (pio.Renderer_RenderWindow) {
+        g_vp_orig_render = pio.Renderer_RenderWindow;
+        pio.Renderer_RenderWindow = zfd_vp_render;
+    }
     g_vp_cb = cb;
 }
 

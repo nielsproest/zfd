@@ -340,6 +340,11 @@ pub const View = struct {
     text: ?[]u8 = null, // text or message being shown (owned)
     is_message: bool = false,
     is_folder: bool = false, // text is a folderSummary: drawn with a folder icon
+    // A picture's zoom over fitting it (1 = fitted; Ctrl+scroll over it), and how far
+    // it's dragged off centre when bigger than the window. Back to fitted for each
+    // new picture.
+    zoom: f32 = 1,
+    pan: [2]f32 = .{ 0, 0 },
 
     pub fn deinit(self: *View, alloc: std.mem.Allocator) void {
         self.clear(alloc);
@@ -377,6 +382,8 @@ pub const View = struct {
                     self.tex = zfd_texture_upload(im.px, im.w, im.h);
                     self.tex_w = @floatFromInt(im.w);
                     self.tex_h = @floatFromInt(im.h);
+                    self.zoom = 1;
+                    self.pan = .{ 0, 0 };
                     zfd_image_free(im.px);
                 },
                 .text => |t| {
@@ -431,15 +438,55 @@ pub const View = struct {
         return enter;
     }
 
+    /// zoom_max is how far a picture zooms in past fitting it.
+    const zoom_max = 16;
+
     fn drawImage(self: *View) void {
         const avail = c.igGetContentRegionAvail();
-        const scale = @min(@min(avail.x / self.tex_w, avail.y / self.tex_h), 1.0); // never upscale past 1:1
-        const w = self.tex_w * scale;
-        const h = self.tex_h * scale;
-        const cur = c.igGetCursorPos();
-        c.igSetCursorPos(cimgui.vec2(cur.x + @max((avail.x - w) * 0.5, 0), cur.y + @max((avail.y - h) * 0.5, 0)));
+        const origin = c.igGetCursorScreenPos();
+        _ = c.igInvisibleButton("##qlimage", avail, 0); // (the area: hover and drag)
+        // Fitted, it's never upscaled past 1:1; zoomed, it grows from there.
+        const fit = @min(@min(avail.x / self.tex_w, avail.y / self.tex_h), 1.0);
+        if (c.igIsItemHovered(0)) {
+            const ctrl = c.igIsKeyDown_Nil(c.ImGuiMod_Ctrl);
+            const wheel = cimgui.zfd_mouse_wheel();
+            if (ctrl and wheel != 0) {
+                // Zoom toward the pointer: the spot under it stays under it.
+                const old = self.zoom;
+                self.zoom = std.math.clamp(old * std.math.pow(f32, 1.1, wheel), 1, zoom_max);
+                const m = c.igGetMousePos();
+                const cx = origin.x + avail.x * 0.5 + self.pan[0];
+                const cy = origin.y + avail.y * 0.5 + self.pan[1];
+                const k = self.zoom / old;
+                self.pan[0] += (m.x - cx) * (1 - k);
+                self.pan[1] += (m.y - cy) * (1 - k);
+            }
+            if (ctrl and c.igIsKeyPressed_Bool(c.ImGuiKey_0, false)) self.zoom = 1;
+            if (self.zoom > 1 and c.igIsMouseDoubleClicked_Nil(0)) self.zoom = 1;
+        }
+        if (self.zoom > 1 and c.igIsItemActive()) {
+            const d = c.igGetMouseDragDelta(0, 0);
+            c.igResetMouseDragDelta(0);
+            self.pan[0] += d.x;
+            self.pan[1] += d.y;
+            c.igSetMouseCursor(c.ImGuiMouseCursor_ResizeAll);
+        }
+        const w = self.tex_w * fit * self.zoom;
+        const h = self.tex_h * fit * self.zoom;
+        // Never dragged so far that an edge comes in past the window's.
+        const px = @max((w - avail.x) * 0.5, 0);
+        const py = @max((h - avail.y) * 0.5, 0);
+        self.pan[0] = std.math.clamp(self.pan[0], -px, px);
+        self.pan[1] = std.math.clamp(self.pan[1], -py, py);
+        const x0 = origin.x + (avail.x - w) * 0.5 + self.pan[0];
+        const y0 = origin.y + (avail.y - h) * 0.5 + self.pan[1];
         const ref: c.ImTextureRef_c = .{ ._TexData = null, ._TexID = self.tex };
-        c.igImage(ref, cimgui.vec2(w, h), cimgui.vec2(0, 0), cimgui.vec2(1, 1));
+        c.ImDrawList_AddImage(c.igGetWindowDrawList(), ref, cimgui.vec2(x0, y0), cimgui.vec2(x0 + w, y0 + h), cimgui.vec2(0, 0), cimgui.vec2(1, 1), 0xFFFFFFFF);
+    }
+
+    /// zoomed reports whether a picture is shown bigger than fitted.
+    pub fn zoomed(self: *const View) bool {
+        return self.tex != 0 and self.zoom > 1;
     }
 };
 

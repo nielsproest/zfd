@@ -188,6 +188,7 @@ pub const Shell = struct {
     preview: quicklook.View = .{}, // what the Preview pane and the Quick Look window show
     show_preview: bool = false, // View > Show Preview (Ctrl+Shift+P): the pane right of the files
     ql_open: bool = false, // the Quick Look window (Space)
+    ql_hovered: bool = false, // the pointer was over it last frame (its Ctrl+scroll zooms the picture)
     ql_full: bool = false, // ... filling the screen (its arrows button)
     ql_rect: [4]f32 = .{ 0, 0, 0, 0 }, // its place before it filled the screen (x, y, w, h)
     ql_restore: bool = false, // put it back at ql_rect next frame
@@ -1911,7 +1912,8 @@ pub const Shell = struct {
             if (self.dialog == null) self.handleShellKeys();
             const b = self.activeBrowser();
             self.handleMouseNav(b); // mouse back/forward; works in the dialog too
-            self.handleItemSize(b); // Ctrl+scroll, in the dialog too
+            // Ctrl+scroll, in the dialog too; over Quick Look it zooms the picture instead.
+            if (!(self.ql_open and self.ql_hovered)) self.handleItemSize(b);
             // Going anywhere (a place, a tab, the path bar) leaves the Network page.
             if (self.net_page and !std.mem.eql(u8, b.location(), self.net_page_loc[0..self.net_page_loc_len])) self.closeNetworkPage();
 
@@ -2169,6 +2171,7 @@ pub const Shell = struct {
         const ready = !self.preview.loading or c.igGetTime() - self.ql_opened_at > 0.3;
         const shown = anim.toward(c.igGetID_Str("##qlshown"), self.ql_open and ready, anim.quick);
         if (shown < 0.01) {
+            self.ql_hovered = false;
             self.ql_full = false; // a closed window opens at its own size again
             self.ql_set = .{ 0, 0 };
             return;
@@ -2205,12 +2208,18 @@ pub const Shell = struct {
         c.igPushStyleVar_Float(c.ImGuiStyleVar_Alpha, shown);
         c.igPushStyleVar_Vec2(c.ImGuiStyleVar_WindowPadding, cimgui.vec2(0, 0));
         c.igPushStyleVar_Float(c.ImGuiStyleVar_WindowRounding, if (self.ql_full) 0 else 10);
+        // Its background and edge are drawn here, rounded (below): ImGui draws a window
+        // that has an OS window to itself square, whatever the rounding.
+        c.igPushStyleVar_Float(c.ImGuiStyleVar_WindowBorderSize, 0);
+        c.igPushStyleColor_Vec4(c.ImGuiCol_WindowBg, cimgui.vec4(0, 0, 0, 0));
         var flags: c.ImGuiWindowFlags = c.ImGuiWindowFlags_NoTitleBar | c.ImGuiWindowFlags_NoCollapse | c.ImGuiWindowFlags_NoSavedSettings |
             c.ImGuiWindowFlags_NoDocking | c.ImGuiWindowFlags_NoScrollbar | c.ImGuiWindowFlags_NoFocusOnAppearing;
         if (self.ql_full) flags |= c.ImGuiWindowFlags_NoMove | c.ImGuiWindowFlags_NoResize;
         const open = c.igBegin("Quick Look###quicklook", null, flags);
-        c.igPopStyleVar(3);
+        c.igPopStyleVar(4);
+        c.igPopStyleColor(1);
         defer c.igEnd();
+        self.ql_hovered = open and c.igIsWindowHovered(c.ImGuiHoveredFlags_RootAndChildWindows);
         if (!open) return;
         if (self.ql_open and c.igIsKeyPressed_Bool(c.ImGuiKey_Escape, false) and !cimgui.zfd_want_text_input()) self.ql_open = false;
 
@@ -2228,11 +2237,15 @@ pub const Shell = struct {
         }
         const pal = theme.p();
         const dl = c.igGetWindowDrawList();
+        const round: f32 = if (self.ql_full) 0 else 10;
+        // The window itself: rounded, with a hairline edge.
+        c.ImDrawList_AddRectFilled(dl, wp, cimgui.vec2(wp.x + ws.x, wp.y + ws.y), c.igGetColorU32_Vec4(pal.content_bg), round, 0);
+        defer if (!self.ql_full) c.ImDrawList_AddRect(dl, cimgui.vec2(wp.x + 0.5, wp.y + 0.5), cimgui.vec2(wp.x + ws.x - 0.5, wp.y + ws.y - 0.5), c.igGetColorU32_Vec4(pal.separator), round, 1, 0); // rounding, thickness, flags (on top of it all)
 
         // The title bar: the toolbar's shade with a hairline under it, as in Finder.
         const pad = @round(fs * 0.5);
         const bar_h = toolbarH() + pad * 2;
-        c.ImDrawList_AddRectFilled(dl, wp, cimgui.vec2(wp.x + ws.x, wp.y + bar_h), c.igGetColorU32_Vec4(pal.toolbar_bg), if (self.ql_full) 0 else 10, c.ImDrawFlags_RoundCornersTop);
+        c.ImDrawList_AddRectFilled(dl, wp, cimgui.vec2(wp.x + ws.x, wp.y + bar_h), c.igGetColorU32_Vec4(pal.toolbar_bg), round, c.ImDrawFlags_RoundCornersTop);
         c.ImDrawList_AddLine(dl, cimgui.vec2(wp.x, wp.y + bar_h), cimgui.vec2(wp.x + ws.x, wp.y + bar_h), c.igGetColorU32_Vec4(pal.toolbar_line), 1);
         // Full screen and close on the right, the same buttons as the main window's;
         // "Open with <app>" on the left, the name centred in what's left.
