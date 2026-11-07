@@ -10,6 +10,7 @@ name: Release
 on:
   push:
     branches: [master]
+  workflow_dispatch: # "Run workflow" on the Actions tab, or `gh workflow run Release`
 
 permissions:
   contents: write # create the release and its tag
