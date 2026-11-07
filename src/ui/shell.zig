@@ -2312,7 +2312,13 @@ pub const Shell = struct {
         self.ql_hovered = open and c.igIsWindowHovered(c.ImGuiHoveredFlags_RootAndChildWindows);
         self.ql_own_window = c.igGetWindowViewport() != c.igGetMainViewport();
         if (!open) return;
-        if (self.ql_open and c.igIsKeyPressed_Bool(c.ImGuiKey_Escape, false) and !cimgui.zfd_want_text_input()) self.ql_open = false;
+        // Escape leaves full screen first, as on macOS; then it closes Quick Look.
+        if (self.ql_open and c.igIsKeyPressed_Bool(c.ImGuiKey_Escape, false) and !cimgui.zfd_want_text_input()) {
+            if (self.ql_full) {
+                self.ql_full = false;
+                self.ql_restore = true;
+            } else self.ql_open = false;
+        }
 
         const b = self.activeBrowser();
         const has = b.count() > 0 and b.sel.cursor < b.count(); // (the item on screen, loading or not)
