@@ -177,6 +177,11 @@ pub const Browser = struct {
     // (or, an archive itself, browsed) when it lands.
     open_when_out: ?[]u8 = null,
     open_out_with: ?[]u8 = null, // ...in this app (its Exec line; owned), else its default
+    // Folders recently left, their listings kept whole (sizes, dates, icons): going
+    // back or forward to one shows it at once, as it was, and it's then read again
+    // in place (as a reload: what changed since shows when that's in). Re-reading
+    // from nothing went old folder, empty, names, then details: a blink.
+    kept: std.ArrayList(Kept) = .empty,
     untrashable: ?[]OpRunner.Pair = null, // items Move to Trash couldn't move (owned), awaiting the user
     untrashable_why: []const u8 = "", // @errorName of why (static)
     tag_filter: tags.Mask = 0, // show only items with one of these colour tags (sidebar Tags; 0 = all)
@@ -308,6 +313,11 @@ pub const Browser = struct {
         if (self.archive_tool) |t| self.alloc.free(t);
         if (self.open_when_out) |p| self.alloc.free(p);
         if (self.open_out_with) |p| self.alloc.free(p);
+        for (self.kept.items) |k| {
+            self.alloc.free(k.dir);
+            k.listing.deinit(self.alloc);
+        }
+        self.kept.deinit(self.alloc);
         self.alloc.free(self.home);
         self.alloc.free(self.trash_home);
         self.alloc.free(self.dir);
@@ -875,6 +885,9 @@ pub const Browser = struct {
     pub fn setPendingSelect(self: *Browser, name: []const u8) void {
         if (self.select_after_load) |old| self.alloc.free(old);
         self.select_after_load = self.alloc.dupe(u8, name) catch null;
+        // The folder's already on screen (one left a moment ago, kept): select it now.
+        // Waiting for its re-read meant a click made meanwhile was undone when it came.
+        if (!self.navigating and self.listing != null and std.mem.eql(u8, self.shownDir(), self.dir)) self.applyPendingSelect();
     }
 
     /// applyPendingSelect, once a real listing exists, selects + reveals the entry the
@@ -960,6 +973,13 @@ pub const Browser = struct {
         self.view_pending = true;
         // Recent and the inside of an archive: nothing to watch (F5 reloads).
         self.watchDir(if (virtual or arcfs.split(dup) != null) "" else dup);
+        // A folder left a moment ago: on screen at once, as it was, then read again
+        // in place (a reload: what changed shows when it's in, the selection kept).
+        if (!virtual) if (self.takeKept(dup)) |l| {
+            self.installListing(l);
+            self.loading = true;
+            self.reloading = true;
+        };
         try self.requestScan();
     }
 
@@ -2547,9 +2567,54 @@ pub const Browser = struct {
     }
 
     /// installListing puts listing `l` on screen (its details may still be arriving).
+    const Kept = struct { dir: []u8, listing: scan.Listing };
+    const kept_max = 8; // folders kept
+    const kept_max_entries = 20_000; // a folder bigger than this isn't kept
+
+    /// keepListing keeps the listing of folder `dir` (owned, both) for a quick way
+    /// back, or frees it: one with paths for names (Recent, subfolder results,
+    /// folders opened in place) or a very big one isn't kept.
+    fn keepListing(self: *Browser, dir: []u8, l: scan.Listing) void {
+        var plain = l.entries.len <= kept_max_entries;
+        if (plain) for (l.entries) |e| if (std.mem.indexOfScalar(u8, e.name, '/') != null) {
+            plain = false;
+            break;
+        };
+        if (!plain) {
+            self.alloc.free(dir);
+            l.deinit(self.alloc);
+            return;
+        }
+        if (self.takeKept(dir)) |older| older.deinit(self.alloc);
+        if (self.kept.items.len >= kept_max) {
+            const gone = self.kept.orderedRemove(0); // the longest ago
+            self.alloc.free(gone.dir);
+            gone.listing.deinit(self.alloc);
+        }
+        self.kept.append(self.alloc, .{ .dir = dir, .listing = l }) catch {
+            self.alloc.free(dir);
+            l.deinit(self.alloc);
+        };
+    }
+
+    /// takeKept takes back the kept listing of folder `dir`, if there is one.
+    fn takeKept(self: *Browser, dir: []const u8) ?scan.Listing {
+        for (self.kept.items, 0..) |k, i| if (std.mem.eql(u8, k.dir, dir)) {
+            const got = self.kept.orderedRemove(i);
+            self.alloc.free(got.dir);
+            return got.listing;
+        };
+        return null;
+    }
+
     fn installListing(self: *Browser, l: scan.Listing) void {
         self.applyPendingView();
         const old = self.listing;
+        // The folder being left: kept, for a quick way back.
+        const left_dir: ?[]u8 = if (old != null and !self.reloading and !std.mem.eql(u8, self.shownDir(), self.dir) and !self.in_recent)
+            (self.alloc.dupe(u8, self.shownDir()) catch null)
+        else
+            null;
         // A reload of the same folder (F5, a finished op, an external change) keeps
         // what was selected, by name, since the entries are renumbered. A
         // newly-created entry's rename or a reveal still takes the cursor.
@@ -2563,7 +2628,9 @@ pub const Browser = struct {
         self.mergeExpanded(); // a reload re-reads the opened subfolders too
         self.rebuildView(); // filter + sort + reset selection
         if (snap) |*sn| self.restoreSelection(sn, false);
-        if (old) |o| o.deinit(self.alloc); // after the restore: snap borrowed its names
+        if (old) |o| { // after the restore: snap borrowed its names
+            if (left_dir) |d| self.keepListing(d, o) else o.deinit(self.alloc);
+        }
         self.reloading = false;
         self.navigating = false;
     }
@@ -3188,6 +3255,69 @@ test "a sort change scrolls to follow the selection, and only the selection" {
     _ = b.sel.takeReveal();
     b.setSort(.name, true);
     try testing.expect(b.sel.takeReveal());
+}
+
+test "going back to a folder shows it at once, then reads it again in place" {
+    const a = testing.allocator;
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "sub");
+    try tmp.dir.writeFile(io, .{ .sub_path = "one.txt", .data = "1" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "sub/inner.txt", .data = "x" });
+    const root = try tmp.dir.realPathFileAlloc(io, ".", a);
+    defer a.free(root);
+    const b = try Browser.init(a, io, root, root, root);
+    defer b.deinit();
+    try waitLoaded(b);
+    try testing.expect(indexOf(b, "one.txt") != null);
+
+    const sub = try std.fs.path.join(a, &.{ root, "sub" });
+    defer a.free(sub);
+    try b.navigate(sub);
+    try waitLoaded(b);
+    try testing.expect(indexOf(b, "inner.txt") != null);
+
+    // Back: the folder is on screen before anything is read, sizes and all.
+    try tmp.dir.writeFile(io, .{ .sub_path = "two.txt", .data = "22" }); // (changed meanwhile)
+    b.backOrUp();
+    try testing.expectEqualStrings(root, b.shownDir());
+    const i = indexOf(b, "one.txt") orelse return error.TestExpectedEqual;
+    try testing.expectEqual(@as(u64, 1), b.at(i).size);
+    try testing.expect(b.loading); // ...and it's being read again
+    // When that's in, what changed meanwhile shows too.
+    try waitLoaded(b);
+    try testing.expect(indexOf(b, "two.txt") != null);
+    try testing.expect(indexOf(b, "one.txt") != null);
+}
+
+test "going up to a kept folder picks the one you came from at once, and a click then sticks" {
+    const a = testing.allocator;
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "sub");
+    try tmp.dir.writeFile(io, .{ .sub_path = "zfile.txt", .data = "1" });
+    const root = try tmp.dir.realPathFileAlloc(io, ".", a);
+    defer a.free(root);
+    const sub = try std.fs.path.join(a, &.{ root, "sub" });
+    defer a.free(sub);
+    const b = try Browser.init(a, io, sub, root, root);
+    defer b.deinit();
+    try waitLoaded(b);
+    try b.navigate(root);
+    try waitLoaded(b);
+    try b.navigate(sub);
+    try waitLoaded(b);
+
+    // Back up to the kept folder: "sub" picked straight away, before any re-read.
+    try b.navigate(root);
+    b.setPendingSelect("sub");
+    try testing.expectEqualStrings("sub", b.at(b.sel.cursor).name);
+    // A click on the file before the re-read lands stays where it was put.
+    b.sel.click(indexOf(b, "zfile.txt").?);
+    try waitLoaded(b);
+    try testing.expectEqualStrings("zfile.txt", b.at(b.sel.cursor).name);
 }
 
 test "browser surfaces a scan error for a missing directory" {
