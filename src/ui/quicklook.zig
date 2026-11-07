@@ -13,6 +13,7 @@ const cimgui = @import("cimgui.zig");
 const c = cimgui.c;
 const core = @import("core");
 const icons = @import("views/icons.zig");
+const theme = @import("theme.zig");
 
 extern fn zfd_image_load_mem(buf: [*]const u8, len: c_int, max_dim: c_int, w: *c_int, h: *c_int) ?[*]u8;
 extern fn zfd_image_free(px: [*]u8) void;
@@ -57,6 +58,7 @@ pub const Loader = struct {
     req_gen: u64 = 0,
     ready: ?Content = null,
     ready_info: ?[]u8 = null, // its More Info ("Label\tValue" lines; owned)
+    ready_listing: ?core.scan.Listing = null, // a folder's items, for the folder view (owned)
     ready_gen: u64 = 0,
     shutdown: bool = false,
     thread: ?std.Thread = null,
@@ -80,6 +82,7 @@ pub const Loader = struct {
         if (self.req) |r| self.alloc.free(r);
         if (self.ready) |r| r.deinit(self.alloc);
         if (self.ready_info) |t| self.alloc.free(t);
+        if (self.ready_listing) |l| l.deinit(self.alloc);
         self.alloc.destroy(self);
     }
 
@@ -98,7 +101,7 @@ pub const Loader = struct {
     /// poll hands over the finished content for request `gen`, if it's ready.
     /// poll hands over the finished content for request `gen`, if it's ready, and its
     /// More Info into `info` (owned; null if none).
-    fn poll(self: *Loader, gen: u64, info: *?[]u8) ?Content {
+    fn poll(self: *Loader, gen: u64, info: *?[]u8, listing: *?core.scan.Listing) ?Content {
         if (!self.mutex.tryLock()) return null;
         defer self.mutex.unlock(self.io);
         const r = self.ready orelse return null;
@@ -106,6 +109,8 @@ pub const Loader = struct {
         self.ready = null;
         info.* = self.ready_info;
         self.ready_info = null;
+        listing.* = self.ready_listing;
+        self.ready_listing = null;
         return r;
     }
 
@@ -122,13 +127,18 @@ pub const Loader = struct {
             const content = load(self.io, self.alloc, path);
             // Its details (a file ffprobe reads, so not one inside an archive).
             const info: ?[]u8 = if (ffprobe) |fp| (if (core.mediainfo.isMedia(std.fs.path.basename(path)) and !core.arcfs.isArchived(path)) core.mediainfo.probe(self.io, self.alloc, fp, path) else null) else null;
+            // A folder's items with their details, for Quick Look's folder view (a
+            // folder inside an archive too).
+            const listing: ?core.scan.Listing = if (content == .folder) (core.arcfs.readAny(self.io, self.alloc, path, null, true) catch null) else null;
             self.alloc.free(path);
 
             self.mutex.lockUncancelable(self.io);
             if (self.ready) |old| old.deinit(self.alloc);
             if (self.ready_info) |old| self.alloc.free(old);
+            if (self.ready_listing) |old| old.deinit(self.alloc);
             self.ready = content;
             self.ready_info = info;
+            self.ready_listing = listing;
             self.ready_gen = gen;
             c.glfwPostEmptyEvent(); // wake an idle UI loop
         }
@@ -368,6 +378,28 @@ pub const Zoom = struct {
     tex: c_uint = 0, // the picture this is for
 };
 
+/// PeekFilter is which of a folder's items Quick Look's folder view lists.
+pub const PeekFilter = enum { all, folders, images, docs, media, other };
+
+fn extIs(name: []const u8, set: []const []const u8) bool {
+    const dot = std.mem.lastIndexOfScalar(u8, name, '.') orelse return false;
+    const e = name[dot + 1 ..];
+    if (e.len == 0 or e.len > 8) return false;
+    var lb: [8]u8 = undefined;
+    const low = std.ascii.lowerString(&lb, e);
+    for (set) |x| if (std.mem.eql(u8, low, x)) return true;
+    return false;
+}
+
+/// categoryOf is the folder view's kind for an item (by extension).
+fn categoryOf(e: core.scan.Entry) PeekFilter {
+    if (e.isDir()) return .folders;
+    if (extIs(e.name, &.{ "png", "jpg", "jpeg", "gif", "bmp", "webp", "heic", "heif", "avif", "tif", "tiff", "svg", "ico", "psd", "jxl", "raw", "cr2", "nef", "dng", "arw", "tga", "exr" })) return .images;
+    if (extIs(e.name, &.{ "mp4", "mkv", "webm", "avi", "mov", "m4v", "wmv", "flv", "mpg", "mpeg", "mp3", "flac", "ogg", "opus", "m4a", "aac", "wav", "wma", "aiff" })) return .media;
+    if (extIs(e.name, &.{ "pdf", "txt", "md", "doc", "docx", "odt", "rtf", "xls", "xlsx", "ods", "ppt", "pptx", "odp", "epub", "csv", "tex", "pages", "numbers", "key" })) return .docs;
+    return .other; // (archives, programs, anything else)
+}
+
 /// stampOf is what update watches an entry by: its modification time and size.
 pub fn stampOf(e: core.scan.Entry) u64 {
     return @as(u64, @bitCast(e.mtime_secs)) *% 1_000_003 +% e.size;
@@ -387,6 +419,17 @@ pub const View = struct {
     info: ?[]u8 = null, // More Info, "Label\tValue" lines (owned)
     stamp: u64 = 0, // the shown item's modification time and size: a change reloads it
     open_request: bool = false, // a double-click on a fitted picture: show it in Quick Look
+    // A folder's items, for Quick Look's folder view (owned), and that view's state:
+    // which kinds it shows, its order (dirs first, A-Z) and the item picked, whose
+    // own preview (a View of its own) is shown beside the list.
+    listing: ?core.scan.Listing = null,
+    peek_filter: PeekFilter = .all,
+    peek_order: std.ArrayList(usize) = .empty,
+    peek_sel: usize = 0, // into peek_order
+    peek_inner: ?*View = null,
+    peek_enter: [std.fs.max_path_bytes]u8 = undefined, // a subfolder to go into (Enter.path)
+    peek_want: [256]u8 = undefined, // the item to pick once the folder's in (back from it)
+    peek_want_len: usize = 0,
     dims_buf: [64]u8 = undefined, // More Info when there's only the header's size
     text: ?[]u8 = null, // text or message being shown (owned)
     is_message: bool = false,
@@ -394,6 +437,11 @@ pub const View = struct {
 
     pub fn deinit(self: *View, alloc: std.mem.Allocator) void {
         self.clear(alloc);
+        self.peek_order.deinit(alloc);
+        if (self.peek_inner) |v| {
+            v.deinit(alloc);
+            alloc.destroy(v);
+        }
         self.path.deinit(alloc);
         if (self.loader) |l| l.destroy();
     }
@@ -405,8 +453,225 @@ pub const View = struct {
         self.img_h = 0;
         if (self.info) |t| alloc.free(t);
         self.info = null;
+        if (self.listing) |l| l.deinit(alloc);
+        self.listing = null;
+        self.peek_order.clearRetainingCapacity();
+        self.peek_sel = 0;
         if (self.text) |t| alloc.free(t);
         self.text = null;
+    }
+
+    /// pickWhenIn has the folder view pick item `name` once the folder it's about to
+    /// show is in (coming back out of that item).
+    pub fn pickWhenIn(self: *View, name: []const u8) void {
+        if (name.len > self.peek_want.len) return;
+        @memcpy(self.peek_want[0..name.len], name);
+        self.peek_want_len = name.len;
+    }
+
+    /// isFolderView reports whether a folder's items are in, for Quick Look's folder
+    /// view (drawFolderView) instead of the summary.
+    pub fn isFolderView(self: *const View) bool {
+        return !self.loading and self.is_folder and self.listing != null;
+    }
+
+    /// sortPeek lists the folder's items the view shows: those of its filter,
+    /// folders first, then by name (hidden ones left out), keeping the pick on the
+    /// same item when it's still there.
+    fn sortPeek(self: *View, alloc: std.mem.Allocator) void {
+        const l = self.listing orelse return;
+        const was: ?[]const u8 = if (self.peek_sel < self.peek_order.items.len and self.peek_order.items[self.peek_sel] < l.entries.len) l.entries[self.peek_order.items[self.peek_sel]].name else null;
+        self.peek_order.clearRetainingCapacity();
+        for (l.entries, 0..) |e, i| {
+            if (e.name.len > 0 and e.name[0] == '.') continue;
+            if (self.peek_filter != .all and categoryOf(e) != self.peek_filter) continue;
+            self.peek_order.append(alloc, i) catch break;
+        }
+        const Ctx = struct {
+            es: []core.scan.Entry,
+            fn less(cx: @This(), a: usize, b: usize) bool {
+                const ea = cx.es[a];
+                const eb = cx.es[b];
+                if (ea.isDir() != eb.isDir()) return ea.isDir();
+                return std.ascii.lessThanIgnoreCase(ea.name, eb.name);
+            }
+        };
+        std.mem.sort(usize, self.peek_order.items, Ctx{ .es = l.entries }, Ctx.less);
+        self.peek_sel = 0;
+        if (self.peek_want_len > 0) {
+            const want = self.peek_want[0..self.peek_want_len];
+            self.peek_want_len = 0;
+            for (self.peek_order.items, 0..) |ix, k| if (std.mem.eql(u8, l.entries[ix].name, want)) {
+                self.peek_sel = k;
+                return;
+            };
+        }
+        if (was) |w| for (self.peek_order.items, 0..) |ix, k| if (std.mem.eql(u8, l.entries[ix].name, w)) {
+            self.peek_sel = k;
+            break;
+        };
+    }
+
+    /// drawFolderView is Quick Look's view of a folder: its name, size and counts on
+    /// top; tabs that pick which kinds it lists (all, folders, pictures, documents,
+    /// media, other); the list on the left, Name and Date Modified; and the item picked in
+    /// it previewed on the right, its name and size, kind and date under it. A
+    /// double-click on an item goes there (returned for the caller to navigate).
+    pub fn drawFolderView(self: *View, io: std.Io, alloc: std.mem.Allocator, size: c.ImVec2_c, b: *core.browser.Browser) ?Enter {
+        const l = self.listing orelse return null;
+        var enter: ?Enter = null;
+        const fs = c.igGetFontSize();
+        const pal = theme.p();
+        const dl = c.igGetWindowDrawList();
+        const p0 = c.igGetCursorScreenPos();
+        const now = std.Io.Clock.real.now(io).toSeconds();
+
+        // The header: the folder's icon, its name, its size and what it holds.
+        const icon = @round(fs * 3);
+        icons.draw(dl, .{ .name = @constCast("folder"), .kind = .dir }, p0.x, p0.y, icon, false);
+        var files: usize = 0;
+        var dirs: usize = 0;
+        var bytes: u64 = 0;
+        for (l.entries) |e| {
+            if (e.name.len > 0 and e.name[0] == '.') continue;
+            if (e.isDir()) dirs += 1 else {
+                files += 1;
+                bytes += e.size;
+            }
+        }
+        c.igSetCursorScreenPos(cimgui.vec2(p0.x + icon + fs * 0.7, p0.y + fs * 0.15));
+        cimgui.pushFontTimes(1.45);
+        cimgui.textUnformatted(std.fs.path.basename(self.path.items));
+        c.igPopFont();
+        c.igSetCursorScreenPos(cimgui.vec2(p0.x + icon + fs * 0.7, c.igGetCursorScreenPos().y));
+        var sb: [32]u8 = undefined;
+        var hb: [128]u8 = undefined;
+        c.igPushStyleColor_Vec4(c.ImGuiCol_Text, theme.dim());
+        cimgui.textUnformatted(std.mem.print(&hb, "{s} \u{00B7} {d} folder{s}, {d} file{s}", .{
+            core.scan.humanizeSize(&sb, bytes), dirs, if (dirs == 1) "" else "s", files, if (files == 1) "" else "s",
+        }) catch "");
+        c.igPopStyleColor(1);
+
+        // The tabs: one rounded strip, the picked one filled in the accent colour.
+        const tabs_y = p0.y + icon + fs * 0.8;
+        const tab_h = @round(fs * 1.7);
+        const names = [_][]const u8{ "All", "Folders", "Images", "Docs", "Media", "Other" };
+        var tw: f32 = 0;
+        for (names) |n| tw += c.igCalcTextSize(n.ptr, n.ptr + n.len, false, -1).x + fs * 1.6;
+        c.ImDrawList_AddRectFilled(dl, cimgui.vec2(p0.x, tabs_y), cimgui.vec2(p0.x + tw, tabs_y + tab_h), c.igGetColorU32_Vec4(pal.row_alt), @round(tab_h * 0.3), 0);
+        var tx = p0.x;
+        for (names, 0..) |n, i| {
+            const w = c.igCalcTextSize(n.ptr, n.ptr + n.len, false, -1).x + fs * 1.6;
+            c.igSetCursorScreenPos(cimgui.vec2(tx, tabs_y));
+            c.igPushID_Int(@intCast(i));
+            if (c.igInvisibleButton("##peektab", cimgui.vec2(w, tab_h), 0)) {
+                self.peek_filter = @enumFromInt(i);
+                self.sortPeek(alloc);
+            }
+            const on = @intFromEnum(self.peek_filter) == i;
+            const hov = c.igIsItemHovered(0);
+            c.igPopID();
+            if (on) c.ImDrawList_AddRectFilled(dl, cimgui.vec2(tx + 2, tabs_y + 2), cimgui.vec2(tx + w - 2, tabs_y + tab_h - 2), c.igGetColorU32_Vec4(pal.accent), @round(tab_h * 0.25), 0) else if (hov) c.ImDrawList_AddRectFilled(dl, cimgui.vec2(tx + 2, tabs_y + 2), cimgui.vec2(tx + w - 2, tabs_y + tab_h - 2), c.igGetColorU32_Col(c.ImGuiCol_ButtonHovered, 1), @round(tab_h * 0.25), 0);
+            const col = if (on) c.igGetColorU32_Vec4(cimgui.vec4(1, 1, 1, 1)) else c.igGetColorU32_Col(c.ImGuiCol_Text, 1);
+            c.ImDrawList_AddText_Vec2(dl, cimgui.vec2(tx + fs * 0.8, tabs_y + (tab_h - c.igGetTextLineHeight()) * 0.5), col, n.ptr, n.ptr + n.len);
+            tx += w;
+        }
+
+        // The list (left) and the picked item (right).
+        const body_y = tabs_y + tab_h + fs * 0.8;
+        const body_h = @max(p0.y + size.y - body_y, fs * 4);
+        const list_w = @round(size.x * 0.55);
+        const gap = fs * 0.8;
+        c.igSetCursorScreenPos(cimgui.vec2(p0.x, body_y));
+        const tflags = c.ImGuiTableFlags_RowBg | c.ImGuiTableFlags_ScrollY | c.ImGuiTableFlags_BordersInnerV;
+        if (c.igBeginTable("##peeklist", 2, tflags, cimgui.vec2(list_w, body_h), 0)) {
+            c.igTableSetupScrollFreeze(0, 1);
+            c.igTableSetupColumn("Name", c.ImGuiTableColumnFlags_WidthStretch, 0.62, 0);
+            c.igTableSetupColumn("Date Modified", c.ImGuiTableColumnFlags_WidthStretch, 0.38, 0);
+            c.igTableHeadersRow();
+            const line = c.igGetTextLineHeight();
+            for (self.peek_order.items, 0..) |ix, k| {
+                const e = l.entries[ix];
+                c.igTableNextRow(0, 0);
+                _ = c.igTableSetColumnIndex(0);
+                c.igPushID_Int(@intCast(k));
+                const picked = k == self.peek_sel;
+                if (c.igSelectable_Bool("##peekrow", picked, c.ImGuiSelectableFlags_SpanAllColumns | c.ImGuiSelectableFlags_AllowDoubleClick, cimgui.vec2(0, 0))) {
+                    self.peek_sel = k;
+                    // A double-click goes there in the main window: into a folder;
+                    // a file, shown picked in this one.
+                    if (c.igIsMouseDoubleClicked_Nil(0)) {
+                        if (e.isDir()) {
+                            if (std.fmt.bufPrint(&self.peek_enter, "{s}/{s}", .{ if (std.mem.eql(u8, self.path.items, "/")) "" else self.path.items, e.name })) |sub|
+                                enter = .{ .path = sub }
+                            else |_| {}
+                        } else enter = .{ .path = self.path.items, .select = e.name };
+                    }
+                }
+                c.igPopID();
+                c.igSameLine(0, 0);
+                const ip = c.igGetCursorScreenPos();
+                icons.draw(c.igGetWindowDrawList(), e, ip.x, ip.y, line, false);
+                c.igSetCursorScreenPos(cimgui.vec2(ip.x + line + fs * 0.4, ip.y));
+                cimgui.textUnformatted(e.name);
+                _ = c.igTableSetColumnIndex(1);
+                var db: [32]u8 = undefined;
+                c.igPushStyleColor_Vec4(c.ImGuiCol_Text, theme.dim());
+                cimgui.textUnformatted(if (e.mtime_secs > 0) core.scan.formatDateFriendly(&db, e.mtime_secs, now) else "");
+                c.igPopStyleColor(1);
+            }
+            c.igEndTable();
+        }
+        if (self.peek_order.items.len == 0) {
+            const t = "Nothing here";
+            const t_w = c.igCalcTextSize(t, null, false, -1).x;
+            c.ImDrawList_AddText_Vec2(dl, cimgui.vec2(p0.x + (list_w - t_w) * 0.5, body_y + body_h * 0.4), c.igGetColorU32_Vec4(theme.dim()), t, null);
+        }
+
+        // The picked item: its own preview in a card, then its name and details.
+        const rx = p0.x + list_w + gap;
+        const rw = @max(size.x - list_w - gap, fs * 4);
+        const meta_h = c.igGetTextLineHeightWithSpacing() * 2.6;
+        const card_h = @max(body_h - meta_h, fs * 4);
+        c.ImDrawList_AddRectFilled(dl, cimgui.vec2(rx, body_y), cimgui.vec2(rx + rw, body_y + card_h), c.igGetColorU32_Vec4(pal.row_alt), 10, 0);
+        if (self.peek_sel < self.peek_order.items.len) {
+            const e = l.entries[self.peek_order.items[self.peek_sel]];
+            if (self.peek_inner == null) {
+                if (alloc.create(View)) |v| {
+                    v.* = .{};
+                    self.peek_inner = v;
+                } else |_| {}
+            }
+            var pb: [std.fs.max_path_bytes]u8 = undefined;
+            const item = std.fmt.bufPrint(&pb, "{s}/{s}", .{ if (std.mem.eql(u8, self.path.items, "/")) "" else self.path.items, e.name }) catch "";
+            if (self.peek_inner) |inner| {
+                inner.update(io, alloc, if (item.len > 0) item else null, stampOf(e));
+                const pad = fs * 0.6;
+                c.igSetCursorScreenPos(cimgui.vec2(rx + pad, body_y + pad));
+                _ = inner.drawPreview(cimgui.vec2(rw - pad * 2, card_h - pad * 2), null);
+            }
+            c.igSetCursorScreenPos(cimgui.vec2(rx, body_y + card_h + fs * 0.5));
+            c.igPushTextWrapPos(rx + rw);
+            cimgui.pushFontTimes(1.15);
+            cimgui.textUnformatted(e.name);
+            c.igPopFont();
+            var kb: [64]u8 = undefined;
+            var zb: [32]u8 = undefined;
+            var tb: [32]u8 = undefined;
+            var mb: [160]u8 = undefined;
+            const kind = b.typeLabel(e, &kb);
+            const date = if (e.mtime_secs > 0) core.scan.formatDateFriendly(&tb, e.mtime_secs, now) else "";
+            const meta = if (e.isDir())
+                std.mem.print(&mb, "{s} \u{00B7} {s}", .{ kind, date }) catch kind
+            else
+                std.mem.print(&mb, "{s} \u{00B7} {s} \u{00B7} {s}", .{ core.scan.humanizeSize(&zb, e.size), kind, date }) catch kind;
+            c.igSetCursorScreenPos(cimgui.vec2(rx, c.igGetCursorScreenPos().y)); // (each line starts at the window's left)
+            c.igPushStyleColor_Vec4(c.ImGuiCol_Text, theme.dim());
+            cimgui.textUnformatted(meta);
+            c.igPopStyleColor(1);
+            c.igPopTextWrapPos();
+        }
+        return enter;
     }
 
     /// takeOpenRequest reports, once, a double-click on the picture shown fitted (the
@@ -454,10 +719,13 @@ pub const View = struct {
             }
         }
         var info: ?[]u8 = null;
-        if (self.loading) if (self.loader) |l| if (l.poll(self.gen, &info)) |content| {
+        var listing: ?core.scan.Listing = null;
+        if (self.loading) if (self.loader) |l| if (l.poll(self.gen, &info, &listing)) |content| {
             self.loading = false;
             self.clear(alloc);
             self.info = info;
+            self.listing = listing;
+            self.sortPeek(alloc);
             switch (content) {
                 .image => |im| {
                     self.tex = zfd_texture_upload(im.px, im.w, im.h);

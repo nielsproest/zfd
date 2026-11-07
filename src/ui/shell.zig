@@ -191,6 +191,11 @@ pub const Shell = struct {
     ql_open: bool = false, // the Quick Look window (Space)
     ql_hovered: bool = false, // the pointer was over it last frame (its Ctrl+scroll zooms the picture)
     ql_own_window: bool = false, // it had an OS window of its own last frame (not inside the main one)
+    // Browsing inside Quick Look (a double-click in a folder's view): what it shows
+    // instead of the selected item (owned), and that item's path when it started
+    // (owned): picking another item in the window, or closing it, ends it.
+    ql_path: ?[]u8 = null,
+    ql_from: ?[]u8 = null,
     ql_zoom: quicklook.Zoom = .{}, // its picture's zoom (the Preview pane's stays fitted)
     ql_full: bool = false, // ... filling the screen (its arrows button)
     ql_rect: [4]f32 = .{ 0, 0, 0, 0 }, // its place before it filled the screen (x, y, w, h)
@@ -1150,6 +1155,7 @@ pub const Shell = struct {
         if (self.rf_path.len > 0) self.alloc.free(self.rf_path);
         if (self.tags_path.len > 0) self.alloc.free(self.tags_path);
         if (self.prefs_path.len > 0) self.alloc.free(self.prefs_path);
+        self.qlStopBrowsing();
         self.prefs.deinit();
         self.alloc.destroy(self.prefs);
         if (self.temp_files) |t| {
@@ -2158,11 +2164,56 @@ pub const Shell = struct {
             self.ql_open = !self.ql_open;
             if (self.ql_open) self.ql_opened_at = c.igGetTime();
         }
+        if (!self.ql_open) self.qlStopBrowsing();
         if (!self.show_preview and !self.ql_open) return;
         var buf: [std.fs.max_path_bytes]u8 = undefined;
         const b = self.activeBrowser();
+        const cur = cursorPath(b, &buf);
+        if (self.ql_path) |p| {
+            const same = if (cur) |cp| (if (self.ql_from) |f| std.mem.eql(u8, cp, f) else false) else false;
+            if (same) return self.preview.update(self.io, self.alloc, p, 0);
+            self.qlStopBrowsing(); // another item picked in the window: follow it again
+        }
         const stamp = if (b.count() > 0 and b.sel.cursor < b.count()) quicklook.stampOf(b.at(b.sel.cursor)) else 0;
-        self.preview.update(self.io, self.alloc, cursorPath(b, &buf), stamp);
+        self.preview.update(self.io, self.alloc, cur, stamp);
+    }
+
+    /// qlBrowse makes Quick Look show `path` (a folder or file inside the one it
+    /// shows) in place of the selected item, as a double-click in a folder's view does.
+    fn qlBrowse(self: *Shell, b: *Browser, path: []const u8) void {
+        const dup = self.alloc.dupe(u8, path) catch return;
+        if (self.ql_from == null) {
+            var buf: [std.fs.max_path_bytes]u8 = undefined;
+            const cp = cursorPath(b, &buf) orelse {
+                self.alloc.free(dup);
+                return;
+            };
+            self.ql_from = self.alloc.dupe(u8, cp) catch {
+                self.alloc.free(dup);
+                return;
+            };
+        }
+        if (self.ql_path) |old| self.alloc.free(old);
+        self.ql_path = dup;
+    }
+
+    /// qlBack steps Quick Look out of what it browsed into: to the folder holding it,
+    /// and back to the selected item from there.
+    fn qlBack(self: *Shell) void {
+        const p = self.ql_path orelse return;
+        self.preview.pickWhenIn(std.fs.path.basename(p)); // where it came back from
+        const parent = std.fs.path.dirname(p) orelse return self.qlStopBrowsing();
+        if (self.ql_from) |f| if (std.mem.eql(u8, parent, f)) return self.qlStopBrowsing();
+        const dup = self.alloc.dupe(u8, parent) catch return;
+        self.alloc.free(p);
+        self.ql_path = dup;
+    }
+
+    fn qlStopBrowsing(self: *Shell) void {
+        if (self.ql_path) |p| self.alloc.free(p);
+        if (self.ql_from) |f| self.alloc.free(f);
+        self.ql_path = null;
+        self.ql_from = null;
     }
 
     /// qlFitSize is the size Quick Look takes for what it shows, as macOS sizes it: an
@@ -2181,6 +2232,8 @@ pub const Shell = struct {
         }
         if (v.text != null and !v.is_message and !v.is_folder)
             return .{ @round(@min(work[2] * 0.6, fs * 60)), @round(max_h) };
+        // A folder's view: its list and the picked item side by side.
+        if (v.isFolderView()) return .{ @round(@min(max_w, fs * 58)), @round(@min(max_h, fs * 38)) };
         return .{ @round(@min(max_w, fs * 36)), @round(@min(max_h, fs * 26)) };
     }
 
@@ -2288,7 +2341,8 @@ pub const Shell = struct {
         c.igPopID();
         var right = wp.x + ws.x - pad - wb_w * 2;
         // Rotate, for a picture (as macOS's Quick Look has them), left of those.
-        if (has and self.canRotate(b)) if (self.ffmpeg_path) |ff| {
+        const browsing = self.ql_path != null;
+        if (has and !browsing and self.canRotate(b)) if (self.ffmpeg_path) |ff| {
             const tbw = @round(toolbarH() * 1.2);
             right -= tbw * 2 + fs * 0.4;
             c.igSetCursorScreenPos(cimgui.vec2(right, wp.y + pad));
@@ -2298,7 +2352,13 @@ pub const Shell = struct {
         };
         var left_end = wp.x + pad;
         var ob: [160]u8 = undefined;
-        if (has and !b.at(b.sel.cursor).isDir()) {
+        // Browsed into something: a back button first, out to where it came from.
+        if (browsing) {
+            c.igSetCursorScreenPos(cimgui.vec2(left_end, wp.y + pad));
+            if (toolButton("##qlback", .back, true, false, "Back")) self.qlBack();
+            left_end += @round(toolbarH() * 1.2) + fs * 0.3;
+        }
+        if (has and !browsing and !b.at(b.sel.cursor).isDir()) {
             const app = b.opensWith(b.at(b.sel.cursor).name);
             const label = (if (app.len > 0) std.mem.printSentinel(&ob, "Open with {s}##qlopen", .{app}, 0) else std.mem.printSentinel(&ob, "Open##qlopen", .{}, 0)) catch "Open##qlopen";
             const lw = c.igCalcTextSize(label.ptr, null, true, -1).x + c.igGetStyle().*.FramePadding.x * 2;
@@ -2311,7 +2371,8 @@ pub const Shell = struct {
         if (has) {
             var tb: [512]u8 = undefined;
             const span = right - left_end - fs;
-            const name = ellipsize(&tb, std.fs.path.basename(b.at(b.sel.cursor).name), span);
+            const title = if (self.ql_path) |p| std.fs.path.basename(p) else std.fs.path.basename(b.at(b.sel.cursor).name);
+            const name = ellipsize(&tb, title, span);
             const tw = c.igCalcTextSize(name.ptr, null, false, -1).x;
             // Centred on the window if it fits there, else in the space between.
             const cx = std.math.clamp(wp.x + (ws.x - tw) * 0.5, left_end + fs * 0.5, @max(right - fs * 0.5 - tw, left_end + fs * 0.5));
@@ -2321,7 +2382,17 @@ pub const Shell = struct {
         // The preview fills the rest.
         c.igSetCursorScreenPos(cimgui.vec2(wp.x + pad, wp.y + bar_h + pad));
         const body = cimgui.vec2(ws.x - pad * 2, @max(ws.y - bar_h - pad * 2, 1));
-        if (self.preview.drawPreview(body, &self.ql_zoom)) |enter| enterFromPreview(b, enter);
+        const enter = if (self.preview.isFolderView())
+            self.preview.drawFolderView(self.io, self.alloc, body, b)
+        else
+            self.preview.drawPreview(body, &self.ql_zoom);
+        // A double-click in a folder's view stays in Quick Look: it shows that folder,
+        // or that file (Back steps out again).
+        if (enter) |e| {
+            var eb: [std.fs.max_path_bytes]u8 = undefined;
+            const target = if (e.select) |n| (std.fmt.bufPrint(&eb, "{s}/{s}", .{ if (std.mem.eql(u8, e.path, "/")) "" else e.path, n }) catch e.path) else e.path;
+            self.qlBrowse(b, target);
+        }
     }
 
     /// canRotate reports whether the item at the cursor is a picture its Quick Actions
