@@ -329,6 +329,18 @@ fn isAny(ext: []const u8, set: []const []const u8) bool {
 }
 
 /// View is the render-thread side: the open flag, what's shown, and the texture.
+/// Zoom is a picture's zoom in one place that shows it (Quick Look's window has
+/// its own; the Preview pane and the gallery show it fitted): how far past fitting
+/// it (1 = fitted; scrolling over it), and how far it's dragged off centre. Back to
+/// fitted for each new picture. It used to live in the View, which the Preview pane
+/// draws too: drawn twice a frame, the pane's much tighter limit pulled a picture
+/// dragged in Quick Look back toward the middle.
+pub const Zoom = struct {
+    zoom: f32 = 1,
+    pan: [2]f32 = .{ 0, 0 },
+    tex: c_uint = 0, // the picture this is for
+};
+
 pub const View = struct {
     loader: ?*Loader = null,
     path: std.ArrayList(u8) = .empty, // what the window shows (or is loading)
@@ -340,11 +352,6 @@ pub const View = struct {
     text: ?[]u8 = null, // text or message being shown (owned)
     is_message: bool = false,
     is_folder: bool = false, // text is a folderSummary: drawn with a folder icon
-    // A picture's zoom over fitting it (1 = fitted; Ctrl+scroll over it), and how far
-    // it's dragged off centre when bigger than the window. Back to fitted for each
-    // new picture.
-    zoom: f32 = 1,
-    pan: [2]f32 = .{ 0, 0 },
 
     pub fn deinit(self: *View, alloc: std.mem.Allocator) void {
         self.clear(alloc);
@@ -382,8 +389,6 @@ pub const View = struct {
                     self.tex = zfd_texture_upload(im.px, im.w, im.h);
                     self.tex_w = @floatFromInt(im.w);
                     self.tex_h = @floatFromInt(im.h);
-                    self.zoom = 1;
-                    self.pan = .{ 0, 0 };
                     zfd_image_free(im.px);
                 },
                 .text => |t| {
@@ -413,7 +418,7 @@ pub const View = struct {
     /// drawPreview fills a `size` box at the cursor with the preview: the picture
     /// centred, the text scrolling, or the message centred. A folder's preview can be
     /// clicked into (returned for the caller to navigate).
-    pub fn drawPreview(self: *View, size: c.ImVec2_c) ?Enter {
+    pub fn drawPreview(self: *View, size: c.ImVec2_c, zoom: ?*Zoom) ?Enter {
         var enter: ?Enter = null;
         _ = c.igBeginChild_Str("##qlpreview", size, 0, if (self.text != null and !self.is_message) 0 else c.ImGuiWindowFlags_NoScrollbar);
         defer c.igEndChild();
@@ -422,7 +427,7 @@ pub const View = struct {
         } else if (self.loading and self.tex == 0 and self.text == null) {
             centeredText("Loading\u{2026}");
         } else if (self.tex != 0) {
-            self.drawImage();
+            self.drawImage(zoom);
         } else if (self.text) |t| {
             if (self.is_folder) {
                 if (drawFolder(t)) |hit| enter = .{ .path = self.path.items, .select = if (hit.len > 0) hit else null };
@@ -441,53 +446,61 @@ pub const View = struct {
     /// zoom_max is how far a picture zooms in past fitting it.
     const zoom_max = 16;
 
-    fn drawImage(self: *View) void {
+    fn drawImage(self: *View, zoom: ?*Zoom) void {
+        var fitted: Zoom = .{ .tex = self.tex };
+        const z = zoom orelse &fitted;
+        if (z.tex != self.tex) z.* = .{ .tex = self.tex }; // a new picture: fitted
         const avail = c.igGetContentRegionAvail();
         const origin = c.igGetCursorScreenPos();
         _ = c.igInvisibleButton("##qlimage", avail, 0); // (the area: hover and drag)
         // Fitted, it's never upscaled past 1:1; zoomed, it grows from there.
         const fit = @min(@min(avail.x / self.tex_w, avail.y / self.tex_h), 1.0);
-        if (c.igIsItemHovered(0)) {
+        if (zoom != null and c.igIsItemHovered(0)) {
             const ctrl = c.igIsKeyDown_Nil(c.ImGuiMod_Ctrl);
+            // Scrolling zooms (a picture has nothing to scroll; Ctrl too, as in the
+            // list). It's ours: nothing else scrolls with it.
+            c.igSetKeyOwner(c.ImGuiKey_MouseWheelY, c.igGetID_Str("##qlzoom"), 0);
             const wheel = cimgui.zfd_mouse_wheel();
-            if (ctrl and wheel != 0) {
+            if (wheel != 0) {
                 // Zoom toward the pointer: the spot under it stays under it.
-                const old = self.zoom;
-                self.zoom = std.math.clamp(old * std.math.pow(f32, 1.1, wheel), 1, zoom_max);
+                const old = z.zoom;
+                z.zoom = std.math.clamp(old * std.math.pow(f32, 1.1, wheel), 1, zoom_max);
                 const m = c.igGetMousePos();
-                const cx = origin.x + avail.x * 0.5 + self.pan[0];
-                const cy = origin.y + avail.y * 0.5 + self.pan[1];
-                const k = self.zoom / old;
-                self.pan[0] += (m.x - cx) * (1 - k);
-                self.pan[1] += (m.y - cy) * (1 - k);
+                const cx = origin.x + avail.x * 0.5 + z.pan[0];
+                const cy = origin.y + avail.y * 0.5 + z.pan[1];
+                const k = z.zoom / old;
+                z.pan[0] += (m.x - cx) * (1 - k);
+                z.pan[1] += (m.y - cy) * (1 - k);
             }
-            if (ctrl and c.igIsKeyPressed_Bool(c.ImGuiKey_0, false)) self.zoom = 1;
-            if (self.zoom > 1 and c.igIsMouseDoubleClicked_Nil(0)) self.zoom = 1;
+            if (ctrl and c.igIsKeyPressed_Bool(c.ImGuiKey_0, false)) z.zoom = 1;
+            if (z.zoom > 1 and c.igIsMouseDoubleClicked_Nil(0)) z.zoom = 1;
         }
-        if (self.zoom > 1 and c.igIsItemActive()) {
+        if (z.zoom > 1 and c.igIsItemActive()) {
             const d = c.igGetMouseDragDelta(0, 0);
             c.igResetMouseDragDelta(0);
-            self.pan[0] += d.x;
-            self.pan[1] += d.y;
+            z.pan[0] += d.x;
+            z.pan[1] += d.y;
             c.igSetMouseCursor(c.ImGuiMouseCursor_ResizeAll);
         }
-        const w = self.tex_w * fit * self.zoom;
-        const h = self.tex_h * fit * self.zoom;
-        // Never dragged so far that an edge comes in past the window's.
-        const px = @max((w - avail.x) * 0.5, 0);
-        const py = @max((h - avail.y) * 0.5, 0);
-        self.pan[0] = std.math.clamp(self.pan[0], -px, px);
-        self.pan[1] = std.math.clamp(self.pan[1], -py, py);
-        const x0 = origin.x + (avail.x - w) * 0.5 + self.pan[0];
-        const y0 = origin.y + (avail.y - h) * 0.5 + self.pan[1];
+        const w = self.tex_w * fit * z.zoom;
+        const h = self.tex_h * fit * z.zoom;
+        // How far it may go off centre: up to half off screen. Bigger than the
+        // window, until its edge reaches the window's middle; smaller, until its own
+        // middle reaches the window's edge. (Exactly "covers the window" pinned a
+        // smaller one to the middle and stopped a drag dead at the edge.) Fitted,
+        // it's centred.
+        if (z.zoom <= 1) z.pan = .{ 0, 0 };
+        const px = @max(w, avail.x) * 0.5;
+        const py = @max(h, avail.y) * 0.5;
+        z.pan[0] = std.math.clamp(z.pan[0], -px, px);
+        z.pan[1] = std.math.clamp(z.pan[1], -py, py);
+        const x0 = origin.x + (avail.x - w) * 0.5 + z.pan[0];
+        const y0 = origin.y + (avail.y - h) * 0.5 + z.pan[1];
         const ref: c.ImTextureRef_c = .{ ._TexData = null, ._TexID = self.tex };
         c.ImDrawList_AddImage(c.igGetWindowDrawList(), ref, cimgui.vec2(x0, y0), cimgui.vec2(x0 + w, y0 + h), cimgui.vec2(0, 0), cimgui.vec2(1, 1), 0xFFFFFFFF);
     }
 
-    /// zoomed reports whether a picture is shown bigger than fitted.
-    pub fn zoomed(self: *const View) bool {
-        return self.tex != 0 and self.zoom > 1;
-    }
+
 };
 
 /// drawFolder is a folder's preview: a big folder icon, the item count under it,

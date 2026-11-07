@@ -189,6 +189,7 @@ pub const Shell = struct {
     show_preview: bool = false, // View > Show Preview (Ctrl+Shift+P): the pane right of the files
     ql_open: bool = false, // the Quick Look window (Space)
     ql_hovered: bool = false, // the pointer was over it last frame (its Ctrl+scroll zooms the picture)
+    ql_zoom: quicklook.Zoom = .{}, // its picture's zoom (the Preview pane's stays fitted)
     ql_full: bool = false, // ... filling the screen (its arrows button)
     ql_rect: [4]f32 = .{ 0, 0, 0, 0 }, // its place before it filled the screen (x, y, w, h)
     ql_restore: bool = false, // put it back at ql_rect next frame
@@ -2287,7 +2288,7 @@ pub const Shell = struct {
         // The preview fills the rest.
         c.igSetCursorScreenPos(cimgui.vec2(wp.x + pad, wp.y + bar_h + pad));
         const body = cimgui.vec2(ws.x - pad * 2, @max(ws.y - bar_h - pad * 2, 1));
-        if (self.preview.drawPreview(body)) |enter| enterFromPreview(b, enter);
+        if (self.preview.drawPreview(body, &self.ql_zoom)) |enter| enterFromPreview(b, enter);
     }
 
     /// OpsSummary is what the toolbar's operations button shows: how many operations
@@ -2588,7 +2589,7 @@ pub const Shell = struct {
         // the details right under it, as in Finder.
         const ql = &self.preview;
         if (ql.tex != 0) ph = @min(ph, @min(avail.x / ql.tex_w, 1.0) * ql.tex_h);
-        if (ql.drawPreview(cimgui.vec2(avail.x, ph))) |enter| enterFromPreview(b, enter);
+        if (ql.drawPreview(cimgui.vec2(avail.x, ph), null)) |enter| enterFromPreview(b, enter); // (fitted: zoom is Quick Look's)
         if (!has) return;
         const e = b.at(b.sel.cursor);
         c.igSpacing();

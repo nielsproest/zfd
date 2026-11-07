@@ -56,7 +56,7 @@ pub const GalleryView = struct {
         else
             null;
         ql.update(b.io, b.alloc, path);
-        if (ql.drawPreview(size)) |enter| {
+        if (ql.drawPreview(size, null)) |enter| {
             var nb: [256]u8 = undefined;
             const sel = if (enter.select) |n| (std.mem.print(&nb, "{s}", .{n}) catch null) else null;
             b.navigate(enter.path) catch return;
