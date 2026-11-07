@@ -192,12 +192,16 @@ pub fn apply(is_dark: bool) void {
     set(col, c.ImGuiCol_ResizeGrip, rgba(0, 0));
     set(col, c.ImGuiCol_ResizeGripHovered, rgba(0, 0));
     set(col, c.ImGuiCol_ResizeGripActive, rgba(0, 0));
-    set(col, c.ImGuiCol_Tab, rgba(0, 0));
-    set(col, c.ImGuiCol_TabHovered, hover);
-    set(col, c.ImGuiCol_TabSelected, if (is_dark) rgb(0x3A3A3D) else rgb(0xFFFFFF));
+    // Tabs stand apart from the toolbar band they sit on: the others recessed
+    // (darker than the band), the selected one raised (lighter, white in light mode).
+    const tab = if (is_dark) rgb(0x262628) else rgb(0xE2E2E5);
+    const tab_sel = if (is_dark) rgb(0x4A4A4E) else rgb(0xFFFFFF);
+    set(col, c.ImGuiCol_Tab, tab);
+    set(col, c.ImGuiCol_TabHovered, if (is_dark) rgb(0x3A3A3D) else rgb(0xEEEEF0));
+    set(col, c.ImGuiCol_TabSelected, tab_sel);
     set(col, c.ImGuiCol_TabSelectedOverline, rgba(0, 0));
-    set(col, c.ImGuiCol_TabDimmed, rgba(0, 0));
-    set(col, c.ImGuiCol_TabDimmedSelected, if (is_dark) rgb(0x333336) else rgb(0xF6F6F6));
+    set(col, c.ImGuiCol_TabDimmed, tab); // the window not focused
+    set(col, c.ImGuiCol_TabDimmedSelected, if (is_dark) rgb(0x404044) else rgb(0xF8F8F8));
     set(col, c.ImGuiCol_TableHeaderBg, P.content_bg);
     set(col, c.ImGuiCol_TableBorderStrong, P.separator);
     // Resizable tables always get inner column lines; Finder's list has none.
