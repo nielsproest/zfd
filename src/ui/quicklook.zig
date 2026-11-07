@@ -59,6 +59,7 @@ pub const Loader = struct {
     ready: ?Content = null,
     ready_info: ?[]u8 = null, // its More Info ("Label\tValue" lines; owned)
     ready_listing: ?core.scan.Listing = null, // a folder's items, for the folder view (owned)
+    ready_spans: ?[]core.nanorc.Span = null, // a text's syntax colours (owned)
     ready_gen: u64 = 0,
     shutdown: bool = false,
     thread: ?std.Thread = null,
@@ -83,6 +84,7 @@ pub const Loader = struct {
         if (self.ready) |r| r.deinit(self.alloc);
         if (self.ready_info) |t| self.alloc.free(t);
         if (self.ready_listing) |l| l.deinit(self.alloc);
+        if (self.ready_spans) |sp| self.alloc.free(sp);
         self.alloc.destroy(self);
     }
 
@@ -101,7 +103,7 @@ pub const Loader = struct {
     /// poll hands over the finished content for request `gen`, if it's ready.
     /// poll hands over the finished content for request `gen`, if it's ready, and its
     /// More Info into `info` (owned; null if none).
-    fn poll(self: *Loader, gen: u64, info: *?[]u8, listing: *?core.scan.Listing) ?Content {
+    fn poll(self: *Loader, gen: u64, info: *?[]u8, listing: *?core.scan.Listing, spans: *?[]core.nanorc.Span) ?Content {
         if (!self.mutex.tryLock()) return null;
         defer self.mutex.unlock(self.io);
         const r = self.ready orelse return null;
@@ -111,6 +113,8 @@ pub const Loader = struct {
         self.ready_info = null;
         listing.* = self.ready_listing;
         self.ready_listing = null;
+        spans.* = self.ready_spans;
+        self.ready_spans = null;
         return r;
     }
 
@@ -130,15 +134,19 @@ pub const Loader = struct {
             // A folder's items with their details, for Quick Look's folder view (a
             // folder inside an archive too).
             const listing: ?core.scan.Listing = if (content == .folder) (core.arcfs.readAny(self.io, self.alloc, path, null, true) catch null) else null;
+            // A text's colours, from nano's syntax files (when there's one for it).
+            const spans: ?[]core.nanorc.Span = if (content == .text) core.nanorc.highlight(self.io, self.alloc, path, content.text) else null;
             self.alloc.free(path);
 
             self.mutex.lockUncancelable(self.io);
             if (self.ready) |old| old.deinit(self.alloc);
             if (self.ready_info) |old| self.alloc.free(old);
             if (self.ready_listing) |old| old.deinit(self.alloc);
+            if (self.ready_spans) |old| self.alloc.free(old);
             self.ready = content;
             self.ready_info = info;
             self.ready_listing = listing;
+            self.ready_spans = spans;
             self.ready_gen = gen;
             c.glfwPostEmptyEvent(); // wake an idle UI loop
         }
@@ -400,6 +408,25 @@ fn categoryOf(e: core.scan.Entry) PeekFilter {
     return .other; // (archives, programs, anything else)
 }
 
+/// colourOf is a nano colour as it reads on ZFD's theme: softer than a terminal's,
+/// darker on a light background.
+fn colourOf(col: core.nanorc.Colour) c.ImVec4_c {
+    const br = col & core.nanorc.bright != 0;
+    const dark = theme.p().dark;
+    const rgb: u32 = switch (col & 0x0f) {
+        1 => if (dark) (if (br) 0xFF6B6B else 0xE06C75) else (if (br) 0xD7263D else 0xB3261E),
+        2 => if (dark) (if (br) 0x8FE388 else 0x98C379) else (if (br) 0x2E9E44 else 0x217A33),
+        3 => if (dark) (if (br) 0xF2D06B else 0xE5C07B) else (if (br) 0xB8860B else 0x8A6400),
+        4 => if (dark) (if (br) 0x7FB8FF else 0x61AFEF) else (if (br) 0x1F6FEB else 0x1652B8),
+        5 => if (dark) (if (br) 0xE29BF2 else 0xC678DD) else (if (br) 0xA43BC2 else 0x7B2C93),
+        6 => if (dark) (if (br) 0x7FE3E8 else 0x56B6C2) else (if (br) 0x0E8A96 else 0x0B6B75),
+        7 => if (dark) 0xDCDFE4 else 0x3A3A3A,
+        8 => if (dark) 0x7F848E else 0x6E6E6E,
+        else => return theme.text(),
+    };
+    return cimgui.vec4(@as(f32, @floatFromInt(rgb >> 16 & 0xff)) / 255, @as(f32, @floatFromInt(rgb >> 8 & 0xff)) / 255, @as(f32, @floatFromInt(rgb & 0xff)) / 255, 1);
+}
+
 /// stampOf is what update watches an entry by: its modification time and size.
 pub fn stampOf(e: core.scan.Entry) u64 {
     return @as(u64, @bitCast(e.mtime_secs)) *% 1_000_003 +% e.size;
@@ -423,6 +450,8 @@ pub const View = struct {
     // which kinds it shows, its order (dirs first, A-Z) and the item picked, whose
     // own preview (a View of its own) is shown beside the list.
     listing: ?core.scan.Listing = null,
+    spans: ?[]core.nanorc.Span = null, // the text's syntax colours (owned; null: plain)
+    line_starts: std.ArrayList(u32) = .empty, // where each of the text's lines starts (coloured text; c_allocator)
     peek_filter: PeekFilter = .all,
     peek_order: std.ArrayList(usize) = .empty,
     peek_sel: usize = 0, // into peek_order
@@ -438,6 +467,7 @@ pub const View = struct {
     pub fn deinit(self: *View, alloc: std.mem.Allocator) void {
         self.clear(alloc);
         self.peek_order.deinit(alloc);
+        self.line_starts.deinit(std.heap.c_allocator); // (drawColoured's)
         if (self.peek_inner) |v| {
             v.deinit(alloc);
             alloc.destroy(v);
@@ -455,6 +485,9 @@ pub const View = struct {
         self.info = null;
         if (self.listing) |l| l.deinit(alloc);
         self.listing = null;
+        if (self.spans) |sp| alloc.free(sp);
+        self.spans = null;
+        self.line_starts.clearRetainingCapacity();
         self.peek_order.clearRetainingCapacity();
         self.peek_sel = 0;
         if (self.text) |t| alloc.free(t);
@@ -720,11 +753,13 @@ pub const View = struct {
         }
         var info: ?[]u8 = null;
         var listing: ?core.scan.Listing = null;
-        if (self.loading) if (self.loader) |l| if (l.poll(self.gen, &info, &listing)) |content| {
+        var spans: ?[]core.nanorc.Span = null;
+        if (self.loading) if (self.loader) |l| if (l.poll(self.gen, &info, &listing, &spans)) |content| {
             self.loading = false;
             self.clear(alloc);
             self.info = info;
             self.listing = listing;
+            self.spans = spans;
             self.sortPeek(alloc);
             switch (content) {
                 .image => |im| {
@@ -764,7 +799,9 @@ pub const View = struct {
     /// clicked into (returned for the caller to navigate).
     pub fn drawPreview(self: *View, size: c.ImVec2_c, zoom: ?*Zoom) ?Enter {
         var enter: ?Enter = null;
-        _ = c.igBeginChild_Str("##qlpreview", size, 0, if (self.text != null and !self.is_message) 0 else c.ImGuiWindowFlags_NoScrollbar);
+        // Coloured text (code) isn't wrapped: it scrolls sideways too.
+        const flags: c.ImGuiWindowFlags = if (self.text == null or self.is_message) c.ImGuiWindowFlags_NoScrollbar else if (self.spans != null) c.ImGuiWindowFlags_HorizontalScrollbar else 0;
+        _ = c.igBeginChild_Str("##qlpreview", size, 0, flags);
         defer c.igEndChild();
         if (self.path.items.len == 0) {
             centeredText("Nothing selected");
@@ -777,6 +814,8 @@ pub const View = struct {
                 if (drawFolder(t)) |hit| enter = .{ .path = self.path.items, .select = if (hit.len > 0) hit else null };
             } else if (self.is_message) {
                 centeredText(t);
+            } else if (self.spans) |sp| {
+                self.drawColoured(t, sp);
             } else {
                 // Text wraps at the edge, like Quick Look's (no sideways scrolling).
                 c.igPushTextWrapPos(0);
@@ -785,6 +824,53 @@ pub const View = struct {
             }
         }
         return enter;
+    }
+
+    /// drawColoured draws a text in its syntax colours, a line at a time (only the
+    /// lines in view), unwrapped as in an editor: long lines scroll sideways.
+    fn drawColoured(self: *View, t: []const u8, spans: []const core.nanorc.Span) void {
+        if (self.line_starts.items.len == 0) {
+            self.line_starts.append(std.heap.c_allocator, 0) catch return;
+            for (t, 0..) |ch, i| if (ch == '\n') self.line_starts.append(std.heap.c_allocator, @intCast(i + 1)) catch return;
+        }
+        const starts = self.line_starts.items;
+        const clip = cimgui.ImGuiListClipper_ImGuiListClipper();
+        defer cimgui.ImGuiListClipper_destroy(clip);
+        cimgui.ImGuiListClipper_Begin(clip, @intCast(starts.len), c.igGetTextLineHeight());
+        var si: usize = 0; // the first span that may reach this line
+        while (cimgui.ImGuiListClipper_Step(clip)) {
+            const r = cimgui.clipperRange(clip);
+            var li: usize = @intCast(r.start);
+            while (li < @as(usize, @intCast(r.end))) : (li += 1) {
+                const a: u32 = starts[li];
+                var b: u32 = if (li + 1 < starts.len) starts[li + 1] - 1 else @intCast(t.len);
+                if (b > a and t[b - 1] == '\r') b -= 1;
+                while (si < spans.len and spans[si].end <= a) si += 1;
+                if (si > 0 and spans[si - 1].end > a) si -= 1;
+                var pos = a;
+                var k = si;
+                var first = true;
+                while (pos < b) {
+                    // The next stretch: plain up to a span, or the span's colour.
+                    var to = b;
+                    var col: core.nanorc.Colour = 0;
+                    if (k < spans.len and spans[k].start <= pos and spans[k].end > pos) {
+                        col = spans[k].colour;
+                        to = @min(spans[k].end, b);
+                        k += 1;
+                    } else if (k < spans.len and spans[k].start < b) {
+                        to = spans[k].start;
+                    }
+                    if (!first) c.igSameLine(0, 0);
+                    first = false;
+                    if (col != 0) c.igPushStyleColor_Vec4(c.ImGuiCol_Text, colourOf(col));
+                    cimgui.textUnformatted(t[pos..to]);
+                    if (col != 0) c.igPopStyleColor(1);
+                    pos = to;
+                }
+                if (first) cimgui.textUnformatted(""); // (an empty line)
+            }
+        }
     }
 
     /// zoom_max is how far a picture zooms in past fitting it.

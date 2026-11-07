@@ -41,6 +41,7 @@ optdepends=('xdg-utils: open files in their default app (xdg-open)'
             'polkit: mount fstab entries that need admin rights (pkexec)'
             'poppler: Quick Look previews of PDFs (pdftoppm)'
             'ffmpeg: Quick Look previews of videos, WebP, TIFF and HEIC; media details (More Info) via ffprobe'
+            'nano-syntax-highlighting: syntax colouring in Quick Look (the nano editor syntax files, many languages)'
             'rclone: network locations (SFTP, SMB, WebDAV, cloud storage) in the sidebar'
             'fuse3: mounting rclone network locations'
             'avahi: the servers on your network, on the Network page (avahi-daemon running)')
