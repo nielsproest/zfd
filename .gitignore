@@ -1,0 +1,20 @@
+/zig-out/
+.zig-cache/
+# makepkg's scratch folders (packaging/arch/PKGBUILD)
+/packaging/arch/src/
+/packaging/arch/pkg/
+*.pkg.tar.zst
+# ImGui runtime window/table state
+imgui.ini
+# zig 0.17 fetches package dependencies here
+/zig-pkg/
+# Local reference material, never part of the repo
+zig-0.*.md
+macOSFinderIMGs/
+macOS Finder.jpg
+Screenshot_*.png
+.DS_Store
+._.DS_Store
+.claude
+imgui.ini
+TODO.md

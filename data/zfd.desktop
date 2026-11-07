@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=ZFD
+GenericName=File Manager
+Comment=Zig File Dialog — tabbed file explorer
+Exec=zfd %F
+Icon=system-file-manager
+Categories=System;Utility;Core;FileTools;FileManager;
+Terminal=false
+MimeType=inode/directory;

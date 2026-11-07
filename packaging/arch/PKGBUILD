@@ -1,0 +1,94 @@
+# Maintainer: Niels <25662877+nielsproest@users.noreply.github.com>
+#
+# Local/dev PKGBUILD: it builds the repository two folders up — there is no
+# release tarball or git remote yet. Run `makepkg -f` from this folder
+# (packaging/arch), then `scp` the resulting zfd-*.pkg.tar.zst onto a machine and
+# `pacman -U` it.
+#
+# It lives here, not at the repo root, because makepkg's $srcdir is always
+# ./src: at the root that is our source tree, and `makepkg -c`/`-C` would
+# `rm -rf` it. Here makepkg's src/ and pkg/ are its own scratch folders.
+#
+# To package from a real source later, drop the $_repo usage and add e.g.:
+#   source=("git+https://…/zfd.git#tag=v$pkgver")
+#   sha256sums=('…')
+# then build from "$srcdir/$pkgname".
+
+pkgname=zfd
+pkgver=0.0.1
+pkgrel=154
+pkgdesc="Zig File Dialog: xdg-desktop-portal FileChooser backend + tabbed explorer, Dear ImGui on GLFW (no GTK/Qt)"
+arch=('x86_64')
+url="https://github.com/nielsproest/zfd"
+license=('GPL-3.0-or-later')
+# Runtime libs (see `ldd`): GLFW for the window/GL context/input, OpenGL via
+# libglvnd, X11 (we force the GLFW X11 backend and do WM integration in Xlib), and
+# libsystemd (sd-bus) for the --service portal backend. Dear ImGui + cimgui are
+# compiled in; Zig links its C++ runtime statically, so no libstdc++
+# depend. xdg-desktop-portal hosts the FileChooser backend we register.
+depends=('glfw' 'libglvnd' 'libx11' 'libxext' 'systemd-libs' 'xdg-desktop-portal')
+# zig 0.17 builds it; pkgconf resolves pkg-config (glfw3/libsystemd) during the
+# build. Dear ImGui, cimgui and the translate-c package (build.zig.zon) are
+# fetched into zig-pkg/ on the first build.
+makedepends=('zig' 'pkgconf')
+# Optional CLI tools we shell out to (never linked); each feature hides when its
+# tool is absent, like GoFileDialog's terminalCandidates pattern.
+optdepends=('xdg-utils: open files in their default app (xdg-open)'
+            'konsole: a terminal for "Open Terminal Here" (or foot/alacritty/kitty/xterm/...)'
+            'libarchive: extract/compress archives via bsdtar (right-click Extract / Add to archive)'
+            'udisks2: mount, unlock and eject devices from the sidebar'
+            'polkit: mount fstab entries that need admin rights (pkexec)'
+            'poppler: Quick Look previews of PDFs (pdftoppm)'
+            'ffmpeg: Quick Look previews of videos, WebP, TIFF and HEIC'
+            'rclone: network locations (SFTP, SMB, WebDAV, cloud storage) in the sidebar'
+            'fuse3: mounting rclone network locations'
+            'avahi: the servers on your network, on the Network page (avahi-daemon running)')
+options=('!lto' '!debug') # Zig manages its own codegen/optimization flags
+# Post-install scriptlet: prints the one manual activation step (see below in
+# package()). Packaging the .portal file advertises the backend but does not make
+# xdg-desktop-portal route file dialogs to zfd — that's a per-user portals.conf
+# choice we can't make from a package.
+install=zfd.install
+_dbusname=org.freedesktop.impl.portal.desktop.zfd
+_repo="$(realpath "$startdir/../..")"
+
+build() {
+	cd "$_repo"
+	# -Dcpu=baseline is REQUIRED for a distributable package: `zig build` otherwise
+	# defaults to the *build host's* native CPU and emits e.g. AVX-512, which SIGILLs
+	# ("illegal hardware instruction") on any machine lacking those instructions —
+	# the exact failure when scp'ing a binary built on an AVX-512 box to a laptop.
+	# baseline = the portable x86-64-v1 minimum; bump to x86_64_v3 if all targets are
+	# recent (2015+) and you want the extra vectorization.
+	#
+	# ReleaseSafe: optimized but keeps Zig's safety checks — the sane default for a
+	# desktop app. Switch to ReleaseFast for maximum speed. Cache under $srcdir so
+	# the build is self-contained and doesn't touch the user's global Zig cache
+	# (zig 0.17's `zig build` takes the global cache only from the environment).
+	ZIG_GLOBAL_CACHE_DIR="$srcdir/zig-global-cache" zig build \
+		-Doptimize=ReleaseSafe \
+		-Dcpu=baseline \
+		--prefix "$srcdir/out" \
+		--cache-dir "$srcdir/zig-cache"
+}
+
+package() {
+	install -Dm755 "$srcdir/out/bin/$pkgname" "$pkgdir/usr/bin/$pkgname"
+	install -Dm644 "$_repo/README.md" "$pkgdir/usr/share/doc/$pkgname/README.md"
+	install -Dm644 "$_repo/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+
+	# xdg-desktop-portal FileChooser backend registration. This only ADVERTISES the
+	# backend; to actually get zfd dialogs the user must select it in
+	# ~/.config/xdg-desktop-portal/portals.conf and restart the portal — see the
+	# post_install message in zfd.install (install= above).
+	install -Dm644 "$_repo/data/$pkgname.portal" \
+		"$pkgdir/usr/share/xdg-desktop-portal/portals/$pkgname.portal"
+
+	# D-Bus activation file (Exec points at the installed binary).
+	install -Dm644 "$_repo/data/$_dbusname.service" \
+		"$pkgdir/usr/share/dbus-1/services/$_dbusname.service"
+
+	# .desktop launcher for the standalone explorer.
+	install -Dm644 "$_repo/data/$pkgname.desktop" \
+		"$pkgdir/usr/share/applications/$pkgname.desktop"
+}

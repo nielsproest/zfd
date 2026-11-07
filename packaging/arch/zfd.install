@@ -1,0 +1,51 @@
+# Shown by pacman on install/upgrade. zfd's package drops the .portal file, which
+# only ADVERTISES that zfd can serve org.freedesktop.impl.portal.FileChooser — it
+# does not make xdg-desktop-portal actually route file dialogs to zfd. The active
+# backend is chosen in portals.conf, which lives in each user's $HOME, so the
+# package can't set it (no single user; must not write to $HOME). Hence this note.
+
+_activation_note() {
+	cat <<'EOF'
+==> zfd is installed, but xdg-desktop-portal won't use it as the FileChooser
+    backend until you select it. As the user who should get zfd dialogs, add to
+    ~/.config/xdg-desktop-portal/portals.conf:
+
+        [preferred]
+        org.freedesktop.impl.portal.FileChooser=zfd
+
+    then restart the portal (log out/in if it doesn't take effect):
+
+        systemctl --user restart xdg-desktop-portal.service
+
+    The value `zfd` is the basename of zfd.portal. Installing that file only
+    advertises the capability; portals.conf picks which backend actually runs.
+    (The .portal's UseIn= hint is legacy and ignored by xdg-desktop-portal >=1.18.)
+EOF
+}
+
+# The portal service (`zfd --service`, D-Bus activated) is long-running. Since
+# 0.0.1-83 it notices its binary was replaced and exits within ~30s while no dialog
+# is open, so the next dialog D-Bus-activates the upgraded one. Upgrading FROM an
+# older build still leaves that older service running, hence the one-time note.
+_restart_note() {
+	cat <<'EOF'
+==> The zfd portal service now restarts itself after upgrades. If you're
+    upgrading from 0.0.1-82 or older, stop the old service once (as the user,
+    not root) so the next file dialog starts the new one:
+
+        pkill -f 'zfd --service'
+
+    Open zfd windows keep running the old version until you close them.
+EOF
+}
+
+post_install() {
+	_activation_note
+}
+
+post_upgrade() {
+	# $2 is the old version; only builds up to -82 lack the self-restart.
+	if [ "$(vercmp "$2" 0.0.1-83)" -lt 0 ]; then
+		_restart_note
+	fi
+}

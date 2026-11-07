@@ -1,0 +1,29 @@
+.{
+    .name = .zfd,
+    .version = "0.0.0",
+    .fingerprint = 0xdf5f5df446d9882d,
+    .minimum_zig_version = "0.17.0",
+    .dependencies = .{
+        .translate_c = .{
+            .url = "git+https://codeberg.org/ziglang/translate-c?ref=2.0.2#c11030012dc325d446474d17b78c242fd1d622ec",
+            .hash = "translate_c-2.0.2-Q_BUWvBNBwBgPKQJPblip6M7AHNK_IPNPmyv4rSIQMQc",
+        },
+        .cimgui = .{
+            .url = "https://github.com/cimgui/cimgui/archive/053280dfff63a74cc56a3e493671bee4bb6c60e4.tar.gz",
+            .hash = "N-V-__8AAH8JPgCXO_7ez6lO8WEleQb900uSvfYxyKT-_nTz",
+        },
+        .imgui = .{
+            .url = "https://github.com/ocornut/imgui/archive/b61e56346a92cfcaf1f43a545ca37b0b32239654.tar.gz",
+            .hash = "N-V-__8AAOTBgQC0wENsLs3rPmgvuyukHzDc04QgCYw-lCQp",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "vendor",
+        "data",
+        "LICENSE",
+        "README.md",
+    },
+}
