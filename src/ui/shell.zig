@@ -190,6 +190,7 @@ pub const Shell = struct {
     show_preview: bool = false, // View > Show Preview (Ctrl+Shift+P): the pane right of the files
     ql_open: bool = false, // the Quick Look window (Space)
     ql_hovered: bool = false, // the pointer was over it last frame (its Ctrl+scroll zooms the picture)
+    ql_own_window: bool = false, // it had an OS window of its own last frame (not inside the main one)
     ql_zoom: quicklook.Zoom = .{}, // its picture's zoom (the Preview pane's stays fitted)
     ql_full: bool = false, // ... filling the screen (its arrows button)
     ql_rect: [4]f32 = .{ 0, 0, 0, 0 }, // its place before it filled the screen (x, y, w, h)
@@ -2226,22 +2227,24 @@ pub const Shell = struct {
             self.ql_set = fit;
         }
         c.igSetNextWindowSizeConstraints(cimgui.vec2(fs * 16, fs * 10), cimgui.vec2(std.math.floatMax(f32), std.math.floatMax(f32)), null, null);
-        c.igSetNextWindowBgAlpha(1.0);
-        c.igPushStyleVar_Float(c.ImGuiStyleVar_Alpha, shown);
+        // Fades in and out, drawn in the main window. In a window of its own, not:
+        // ImGui hands the fade to the window's opacity, and the window manager
+        // animates the window appearing too, so it seemed to animate twice.
+        c.igPushStyleVar_Float(c.ImGuiStyleVar_Alpha, if (self.ql_own_window) 1 else shown);
         c.igPushStyleVar_Vec2(c.ImGuiStyleVar_WindowPadding, cimgui.vec2(0, 0));
         c.igPushStyleVar_Float(c.ImGuiStyleVar_WindowRounding, if (self.ql_full) 0 else 10);
         // Its background and edge are drawn here, rounded (below): ImGui draws a window
-        // that has an OS window to itself square, whatever the rounding.
+        // that has an OS window to itself square, whatever the rounding, and makes its
+        // background opaque even when it's set see-through, so it draws none at all.
         c.igPushStyleVar_Float(c.ImGuiStyleVar_WindowBorderSize, 0);
-        c.igPushStyleColor_Vec4(c.ImGuiCol_WindowBg, cimgui.vec4(0, 0, 0, 0));
-        var flags: c.ImGuiWindowFlags = c.ImGuiWindowFlags_NoTitleBar | c.ImGuiWindowFlags_NoCollapse | c.ImGuiWindowFlags_NoSavedSettings |
+        var flags: c.ImGuiWindowFlags = c.ImGuiWindowFlags_NoTitleBar | c.ImGuiWindowFlags_NoBackground | c.ImGuiWindowFlags_NoCollapse | c.ImGuiWindowFlags_NoSavedSettings |
             c.ImGuiWindowFlags_NoDocking | c.ImGuiWindowFlags_NoScrollbar | c.ImGuiWindowFlags_NoFocusOnAppearing;
         if (self.ql_full) flags |= c.ImGuiWindowFlags_NoMove | c.ImGuiWindowFlags_NoResize;
         const open = c.igBegin("Quick Look###quicklook", null, flags);
         c.igPopStyleVar(4);
-        c.igPopStyleColor(1);
         defer c.igEnd();
         self.ql_hovered = open and c.igIsWindowHovered(c.ImGuiHoveredFlags_RootAndChildWindows);
+        self.ql_own_window = c.igGetWindowViewport() != c.igGetMainViewport();
         if (!open) return;
         if (self.ql_open and c.igIsKeyPressed_Bool(c.ImGuiKey_Escape, false) and !cimgui.zfd_want_text_input()) self.ql_open = false;
 

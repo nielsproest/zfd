@@ -734,6 +734,9 @@ pub const ChildFocus = enum {
 pub fn makeChildWindow(child: ?*anyopaque, parent: ?*anyopaque, focus: ChildFocus) void {
     const dpy = display() orelse return;
     const w = window(child);
+    // No background for the X server to paint: on each resize step it filled what
+    // the window grew by with it before ZFD drew there, which blinked.
+    _ = x.XSetWindowBackgroundPixmap(dpy, w, x.None);
     if (focus == .popup or focus == .tooltip) {
         // Override-redirect, like any toolkit's tooltips and menus: the window manager
         // leaves it alone entirely. Managed, it was stacked with the window it belongs
@@ -760,6 +763,13 @@ pub fn makeChildWindow(child: ?*anyopaque, parent: ?*anyopaque, focus: ChildFocu
         }
         const tname = if (focus == .tooltip) "_NET_WM_WINDOW_TYPE_TOOLTIP" else "_NET_WM_WINDOW_TYPE_POPUP_MENU";
         var wtype: c_long = @intCast(x.XInternAtom(dpy, tname, 0));
+        _ = x.XChangeProperty(dpy, w, x.XInternAtom(dpy, "_NET_WM_WINDOW_TYPE", 0), x.XA_ATOM, 32, x.PropModeReplace, @ptrCast(&wtype), 1);
+    } else {
+        // A panel dragged out of the main window (Quick Look, Progress): a utility
+        // window, a palette of the main one. Window managers animate a normal window
+        // appearing and going (KWin scales it), and one of these comes and goes each
+        // time it crosses the main window's edge, so it seemed to shrink and grow.
+        var wtype: c_long = @intCast(x.XInternAtom(dpy, "_NET_WM_WINDOW_TYPE_UTILITY", 0));
         _ = x.XChangeProperty(dpy, w, x.XInternAtom(dpy, "_NET_WM_WINDOW_TYPE", 0), x.XA_ATOM, 32, x.PropModeReplace, @ptrCast(&wtype), 1);
     }
     var states = [_]c_long{
