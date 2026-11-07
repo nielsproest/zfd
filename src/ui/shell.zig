@@ -172,6 +172,7 @@ pub const Shell = struct {
     net_page_loc_len: usize = 0,
     connect: connect_mod.Connect = undefined, // Connect to Server (set up in init)
     ffmpeg_path: ?[]u8 = null, // ffmpeg, for the pictures' Quick Actions (owned; null: not installed)
+    ffprobe_path: ?[]u8 = null, // ffprobe, for media files' More Info (owned; null: not installed)
     dev_msg: [512]u8 = undefined, // last device error (udisksctl's reason), shown under Devices
     dev_msg_len: usize = 0,
     // New-device notices: the volume paths seen so far (owned; null until the first
@@ -379,6 +380,8 @@ pub const Shell = struct {
             if (self.devices) |d| d.setNetBase(self.net_base);
         }
         self.ffmpeg_path = core.fsops.findOnPath(io, alloc, "ffmpeg");
+        self.ffprobe_path = core.fsops.findOnPath(io, alloc, "ffprobe");
+        @import("quicklook.zig").ffprobe = self.ffprobe_path;
         self.actions.ffmpeg = self.ffmpeg_path;
         // Connect to Server's rclone listens next to the mounts, in the runtime dir.
         self.connect = connect_mod.Connect.init(alloc, io, self.net_base, home);
@@ -1099,6 +1102,7 @@ pub const Shell = struct {
         for (self.drop_probe.items) |p| self.alloc.free(p);
         self.drop_probe.deinit(self.alloc);
         if (self.ffmpeg_path) |p| self.alloc.free(p);
+        if (self.ffprobe_path) |p| self.alloc.free(p);
         if (self.actions.probe) |pr| pr.release();
         self.actions.freeBatch(self.alloc);
         self.actions.br_olds.deinit(self.alloc);
@@ -2091,7 +2095,14 @@ pub const Shell = struct {
     fn drawInfoWindow(self: *Shell) void {
         const b = self.activeBrowser();
         if (!self.info_ready and !b.loading) {
+            var waiting = false;
             for (0..b.count()) |i| if (std.mem.eql(u8, b.at(i).name, self.info_name)) {
+                // Its size and dates come after its name: wait for them (one item's
+                // lookup), or it showed 0 B and no dates.
+                if (b.at(i).pending) {
+                    waiting = true;
+                    break;
+                }
                 b.sel.click(i);
                 self.actions.openProperties(b, i);
                 self.info_ready = true;
@@ -2100,7 +2111,7 @@ pub const Shell = struct {
                 c.glfwSetWindowTitle(self.glfwWin(), t.ptr);
                 break;
             };
-            if (!self.info_ready) self.info_ready = true; // gone: say so below
+            if (!self.info_ready and !waiting) self.info_ready = true; // gone: say so below
         }
         const title = if (self.info_title_len > 0) self.info_title[0..self.info_title_len] else self.info_name;
         if (self.csd) {
@@ -2110,7 +2121,15 @@ pub const Shell = struct {
         _ = c.igBeginChild_Str("##info", cimgui.vec2(0, 0), c.ImGuiChildFlags_AlwaysUseWindowPadding, 0);
         if (self.info_title_len == 0) {
             if (b.loading) dimText("Loading\u{2026}") else dimText("This item is no longer there.");
-        } else if (self.actions.drawInfo(b)) self.closeWindow();
+        } else {
+            // More Info comes from the preview's loader, which reads the file on its
+            // own thread; it shows once it's in.
+            var ib: [std.fs.max_path_bytes]u8 = undefined;
+            const ip = std.mem.print(&ib, "{s}/{s}", .{ if (std.mem.eql(u8, b.dir, "/")) "" else b.dir, self.info_name }) catch "";
+            self.preview.update(self.io, self.alloc, if (ip.len > 0) ip else null);
+            self.actions.more_info = self.preview.moreInfo(ip) orelse "";
+            if (self.actions.drawInfo(b)) self.closeWindow();
+        }
         self.actions.drawModals(b); // Open With's chooser, delete confirmations
         c.igEndChild();
     }
@@ -2607,6 +2626,16 @@ pub const Shell = struct {
         if (e.mtime_secs > 0) infoRow("Modified", core.scan.formatDateFriendly(&db, e.mtime_secs, table.nowSecs()));
         var cb: [24]u8 = undefined;
         if (e.btime_secs > 0) infoRow("Created", core.scan.formatDateFriendly(&cb, e.btime_secs, table.nowSecs()));
+        // A picture's, video's or recording's details, once read (the preview's loader).
+        var pb: [std.fs.max_path_bytes]u8 = undefined;
+        if (cursorPath(b, &pb)) |p| if (ql.moreInfo(p)) |more| {
+            c.igSeparatorText("More Info");
+            var it = std.mem.splitScalar(u8, more, '\n');
+            while (it.next()) |ln| {
+                const tab = std.mem.indexOfScalar(u8, ln, '\t') orelse continue;
+                infoRow(ln[0..tab], ln[tab + 1 ..]);
+            }
+        };
         // Quick Actions for a picture, as under Finder's preview.
         if (self.ffmpeg_path) |ff| if (!e.isDir() and !b.virtualView() and core.imagetool.isImage(e.name)) {
             c.igSpacing();
@@ -2615,8 +2644,8 @@ pub const Shell = struct {
             c.igSameLine(0, -1);
             if (c.igButton("Rotate Right", cimgui.vec2(0, 0))) act = .{ .rotate = true };
             if (act) |a| {
-                var pb: [std.fs.max_path_bytes]u8 = undefined;
-                if (cursorPath(b, &pb)) |p| core.imagetool.run(self.io, self.alloc, ff, a, &.{p});
+                var cpb: [std.fs.max_path_bytes]u8 = undefined;
+                if (cursorPath(b, &cpb)) |p| core.imagetool.run(self.io, self.alloc, ff, a, &.{p});
             }
         };
     }

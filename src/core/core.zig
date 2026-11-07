@@ -38,6 +38,7 @@ pub const fstab = @import("fstab.zig");
 pub const tags = @import("tags.zig");
 pub const archives = @import("archives.zig");
 pub const arcfs = @import("arcfs.zig");
+pub const mediainfo = @import("mediainfo.zig");
 pub const rclone = @import("rclone.zig");
 pub const rcd = @import("rcd.zig");
 pub const sshconfig = @import("sshconfig.zig");
@@ -65,6 +66,7 @@ test {
     _ = fsops;
     _ = scan;
     _ = arcfs;
+    _ = mediainfo;
     _ = scanner;
     _ = selection;
     _ = clipboard;

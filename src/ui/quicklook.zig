@@ -24,11 +24,16 @@ const max_dim = 2048; // longest side of a decoded preview
 /// temp_files is where an entry of an archive that an outside tool must read (a PDF,
 /// a video) is taken out to (set by the shell; null: no such previews).
 pub var temp_files: ?*core.archives.TempFiles = null;
+/// ffprobe is FFmpeg's, for a picture's, video's or recording's details (More Info;
+/// set by the shell; null: not installed, the header's dimensions only).
+pub var ffprobe: ?[]const u8 = null;
 const image_max = 256 << 20; // biggest picture inside an archive read for a preview
 const text_limit = 64 * 1024; // bytes of a text file shown
 
 const Content = union(enum) {
-    image: struct { px: [*]u8, w: c_int, h: c_int },
+    // w, h: as decoded (shrunk to max_dim); full_w, full_h: the picture's own size,
+    // upright (0: unknown, e.g. a frame of a video).
+    image: struct { px: [*]u8, w: c_int, h: c_int, full_w: c_int = 0, full_h: c_int = 0 },
     text: []u8,
     message: []u8,
     folder: []u8, // "N items" then the first names, one per line
@@ -51,6 +56,7 @@ pub const Loader = struct {
     req: ?[]u8 = null, // guarded: pending path (owned)
     req_gen: u64 = 0,
     ready: ?Content = null,
+    ready_info: ?[]u8 = null, // its More Info ("Label\tValue" lines; owned)
     ready_gen: u64 = 0,
     shutdown: bool = false,
     thread: ?std.Thread = null,
@@ -73,6 +79,7 @@ pub const Loader = struct {
         if (self.thread) |t| t.join();
         if (self.req) |r| self.alloc.free(r);
         if (self.ready) |r| r.deinit(self.alloc);
+        if (self.ready_info) |t| self.alloc.free(t);
         self.alloc.destroy(self);
     }
 
@@ -89,12 +96,16 @@ pub const Loader = struct {
     }
 
     /// poll hands over the finished content for request `gen`, if it's ready.
-    fn poll(self: *Loader, gen: u64) ?Content {
+    /// poll hands over the finished content for request `gen`, if it's ready, and its
+    /// More Info into `info` (owned; null if none).
+    fn poll(self: *Loader, gen: u64, info: *?[]u8) ?Content {
         if (!self.mutex.tryLock()) return null;
         defer self.mutex.unlock(self.io);
         const r = self.ready orelse return null;
         if (self.ready_gen != gen) return null;
         self.ready = null;
+        info.* = self.ready_info;
+        self.ready_info = null;
         return r;
     }
 
@@ -109,11 +120,15 @@ pub const Loader = struct {
             self.mutex.unlock(self.io);
 
             const content = load(self.io, self.alloc, path);
+            // Its details (a file ffprobe reads, so not one inside an archive).
+            const info: ?[]u8 = if (ffprobe) |fp| (if (core.mediainfo.isMedia(std.fs.path.basename(path)) and !core.arcfs.isArchived(path)) core.mediainfo.probe(self.io, self.alloc, fp, path) else null) else null;
             self.alloc.free(path);
 
             self.mutex.lockUncancelable(self.io);
             if (self.ready) |old| old.deinit(self.alloc);
+            if (self.ready_info) |old| self.alloc.free(old);
             self.ready = content;
+            self.ready_info = info;
             self.ready_gen = gen;
             c.glfwPostEmptyEvent(); // wake an idle UI loop
         }
@@ -134,7 +149,14 @@ fn load(io: std.Io, alloc: std.mem.Allocator, path: []const u8) Content {
     if (isAny(ext, &.{ "png", "jpg", "jpeg", "gif", "bmp", "tga", "psd", "pnm", "ppm", "pgm", "pic" })) {
         var w: c_int = 0;
         var h: c_int = 0;
-        if (@import("image.zig").load(io, pz.ptr, max_dim, &w, &h)) |px| return .{ .image = .{ .px = px, .w = w, .h = h } };
+        const image = @import("image.zig");
+        if (image.load(io, pz.ptr, max_dim, &w, &h)) |px| {
+            var fw: c_int = 0;
+            var fh: c_int = 0;
+            _ = image.zfd_image_size(pz.ptr, &fw, &fh);
+            if (core.exif.turned(image.orientationOf(io, path))) std.mem.swap(c_int, &fw, &fh);
+            return .{ .image = .{ .px = px, .w = w, .h = h, .full_w = fw, .full_h = fh } };
+        }
     }
     if (std.mem.eql(u8, ext, "pdf")) {
         if (renderVia(io, alloc, &.{ "pdftoppm", "-png", "-f", "1", "-l", "1", "-singlefile", "-scale-to", "1600", path })) |im| return im;
@@ -169,7 +191,12 @@ fn loadArchived(io: std.Io, alloc: std.mem.Allocator, path: []const u8) Content 
             defer alloc.free(data);
             var w: c_int = 0;
             var h: c_int = 0;
-            if (zfd_image_load_mem(data.ptr, @intCast(data.len), max_dim, &w, &h)) |px| return .{ .image = .{ .px = px, .w = w, .h = h } };
+            if (zfd_image_load_mem(data.ptr, @intCast(data.len), max_dim, &w, &h)) |px| {
+                var fw: c_int = 0;
+                var fh: c_int = 0;
+                _ = @import("image.zig").zfd_image_size_mem(data.ptr, @intCast(data.len), &fw, &fh);
+                return .{ .image = .{ .px = px, .w = w, .h = h, .full_w = fw, .full_h = fh } };
+            }
         } else |_| {}
     }
     const outside = std.mem.eql(u8, ext, "pdf") or
@@ -349,6 +376,11 @@ pub const View = struct {
     tex: c_uint = 0,
     tex_w: f32 = 0,
     tex_h: f32 = 0,
+    // The picture's own size (not the shrunk texture's), for Dimensions (0: unknown).
+    img_w: c_int = 0,
+    img_h: c_int = 0,
+    info: ?[]u8 = null, // More Info, "Label\tValue" lines (owned)
+    dims_buf: [64]u8 = undefined, // More Info when there's only the header's size
     text: ?[]u8 = null, // text or message being shown (owned)
     is_message: bool = false,
     is_folder: bool = false, // text is a folderSummary: drawn with a folder icon
@@ -362,8 +394,30 @@ pub const View = struct {
     fn clear(self: *View, alloc: std.mem.Allocator) void {
         if (self.tex != 0) zfd_texture_free(self.tex);
         self.tex = 0;
+        self.img_w = 0;
+        self.img_h = 0;
+        if (self.info) |t| alloc.free(t);
+        self.info = null;
         if (self.text) |t| alloc.free(t);
         self.text = null;
+    }
+
+    /// moreInfo is the technical details of what `path` shows, once loaded:
+    /// "Label\tValue" lines (borrowed until the next update), or null for none.
+    /// Without ffprobe, a picture's dimensions from its header.
+    pub fn moreInfo(self: *View, path: []const u8) ?[]const u8 {
+        if (self.loading or !std.mem.eql(u8, path, self.path.items)) return null;
+        if (self.info) |t| return t;
+        const d = self.dimensions(path) orelse return null;
+        return std.fmt.bufPrint(&self.dims_buf, "Dimensions\t{d} \u{00D7} {d}", .{ d[0], d[1] }) catch null;
+    }
+
+    /// dimensions is the size of the picture `path` shows, once it has loaded
+    /// (null: not a picture, unknown, or another item's).
+    pub fn dimensions(self: *const View, path: []const u8) ?[2]c_int {
+        if (self.loading or self.tex == 0 or self.img_w <= 0 or self.img_h <= 0) return null;
+        if (!std.mem.eql(u8, path, self.path.items)) return null;
+        return .{ self.img_w, self.img_h };
     }
 
     /// update points the preview at `path` (the cursor's item; null = nothing) and
@@ -381,14 +435,18 @@ pub const View = struct {
                 }
             }
         }
-        if (self.loading) if (self.loader) |l| if (l.poll(self.gen)) |content| {
+        var info: ?[]u8 = null;
+        if (self.loading) if (self.loader) |l| if (l.poll(self.gen, &info)) |content| {
             self.loading = false;
             self.clear(alloc);
+            self.info = info;
             switch (content) {
                 .image => |im| {
                     self.tex = zfd_texture_upload(im.px, im.w, im.h);
                     self.tex_w = @floatFromInt(im.w);
                     self.tex_h = @floatFromInt(im.h);
+                    self.img_w = im.full_w;
+                    self.img_h = im.full_h;
                     zfd_image_free(im.px);
                 },
                 .text => |t| {

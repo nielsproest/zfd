@@ -84,6 +84,7 @@ pub const ViewActions = struct {
     // Get Info opens in a window of its own (a `zfd --get-info` process): the browser
     // asks for one here (the shell spawns it), and that process draws drawInfo.
     info_window: bool = false, // this process IS a Get Info window
+    more_info: []const u8 = "", // the item's More Info, "Label\tValue" lines (borrowed, set each frame)
     info_request: bool = false, // the item at prop_path wants a Get Info window
     del_pending: bool = false,
     openwith_pending: bool = false,
@@ -674,31 +675,7 @@ pub const ViewActions = struct {
         tagRowIn(b, false);
 
         if (infoSection("General:", true)) {
-            if (c.igBeginTable("##general", 2, 0, cimgui.vec2(-1, 0), 0)) {
-                // Finder's layout: labels right-aligned with a colon, values wrapping.
-                c.igTableSetupColumn("", c.ImGuiTableColumnFlags_WidthFixed, @round(fs * 5.5), 0);
-                c.igTableSetupColumn("", c.ImGuiTableColumnFlags_WidthStretch, 0, 0);
-                var it = std.mem.splitScalar(u8, self.prop_buf[0..self.prop_len], '\n');
-                while (it.next()) |line| {
-                    const tab = std.mem.indexOfScalar(u8, line, '\t') orelse continue;
-                    const val = line[tab + 1 ..];
-                    if (val.len == 0 or std.mem.eql(u8, val, "-")) continue; // nothing to say
-                    c.igTableNextRow(0, 0);
-                    _ = c.igTableSetColumnIndex(0);
-                    var lb: [40]u8 = undefined;
-                    const lbl = std.mem.print(&lb, "{s}:", .{line[0..tab]}) catch line[0..tab];
-                    const lw = c.igCalcTextSize(lbl.ptr, lbl.ptr + lbl.len, false, -1).x;
-                    c.igSetCursorPosX(c.igGetCursorPosX() + @max(c.igGetContentRegionAvail().x - lw, 0));
-                    c.igPushStyleColor_Vec4(c.ImGuiCol_Text, theme.dim());
-                    cimgui.textUnformatted(lbl);
-                    c.igPopStyleColor(1);
-                    _ = c.igTableSetColumnIndex(1);
-                    c.igPushTextWrapPos(0);
-                    cimgui.textUnformatted(val);
-                    c.igPopTextWrapPos();
-                }
-                c.igEndTable();
-            }
+            infoTable("##general", self.prop_buf[0..self.prop_len], fs * 5.5);
             // A folder's real size: totaled in the background, shown climbing.
             if (self.probe) |pr| {
                 const t = pr.totals();
@@ -710,6 +687,9 @@ pub const ViewActions = struct {
                 cimgui.textUnformatted(line);
             }
         }
+        // A picture's, video's or recording's details (the shell fills them in when
+        // they've been read).
+        if (self.more_info.len > 0 and infoSection("More Info:", true)) infoTable("##moreinfo", self.more_info, fs * 7);
 
         if (infoSection("Name & Extension:", false)) {
             c.igBeginDisabled(ro);
@@ -1138,4 +1118,33 @@ fn allImages(b: *Browser) bool {
         if (b.sel.isSelected(i) and (b.at(i).isDir() or !core.imagetool.isImage(b.at(i).name))) return false;
     }
     return true;
+}
+
+/// infoTable draws "Label\tValue" lines as Finder's Get Info does: the labels
+/// right-aligned with a colon in a column `label_w` wide, the values wrapping.
+/// Lines with nothing to say ("" or "-") are left out.
+fn infoTable(id: [*:0]const u8, text: []const u8, label_w: f32) void {
+    if (!c.igBeginTable(id, 2, 0, cimgui.vec2(-1, 0), 0)) return;
+    defer c.igEndTable();
+    c.igTableSetupColumn("", c.ImGuiTableColumnFlags_WidthFixed, @round(label_w), 0);
+    c.igTableSetupColumn("", c.ImGuiTableColumnFlags_WidthStretch, 0, 0);
+    var it = std.mem.splitScalar(u8, text, '\n');
+    while (it.next()) |line| {
+        const tab = std.mem.indexOfScalar(u8, line, '\t') orelse continue;
+        const val = line[tab + 1 ..];
+        if (val.len == 0 or std.mem.eql(u8, val, "-")) continue;
+        c.igTableNextRow(0, 0);
+        _ = c.igTableSetColumnIndex(0);
+        var lb: [40]u8 = undefined;
+        const lbl = std.mem.print(&lb, "{s}:", .{line[0..tab]}) catch line[0..tab];
+        const lw = c.igCalcTextSize(lbl.ptr, lbl.ptr + lbl.len, false, -1).x;
+        c.igSetCursorPosX(c.igGetCursorPosX() + @max(c.igGetContentRegionAvail().x - lw, 0));
+        c.igPushStyleColor_Vec4(c.ImGuiCol_Text, theme.dim());
+        cimgui.textUnformatted(lbl);
+        c.igPopStyleColor(1);
+        _ = c.igTableSetColumnIndex(1);
+        c.igPushTextWrapPos(0);
+        cimgui.textUnformatted(val);
+        c.igPopTextWrapPos();
+    }
 }
