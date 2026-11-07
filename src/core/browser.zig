@@ -798,7 +798,10 @@ pub const Browser = struct {
         var snap = self.snapSelection();
         defer snap.deinit();
         self.rebuildView(); // clears the view + resets the selection
-        self.restoreSelection(&snap, true);
+        // Scroll to follow only a selection: with nothing selected the cursor still
+        // sits on the first row, and following it to where the re-sort moved it
+        // threw you away from where you were (the top, the bottom, anywhere).
+        self.restoreSelection(&snap, snap.names.count() > 0);
     }
 
     /// SelSnap is the selection by NAME (plus the cursor's entry name), so it survives
@@ -3095,6 +3098,32 @@ test "browser resorts on setSort" {
     try testing.expectEqualStrings("a.txt", b.at(0).name); // name asc
     b.setSort(.size, true); // size asc → b.txt (1) before a.txt (3)
     try testing.expectEqualStrings("b.txt", b.at(0).name);
+}
+
+test "a sort change scrolls to follow the selection, and only the selection" {
+    const a = testing.allocator;
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "a.txt", .data = "xxx" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "b.txt", .data = "x" });
+    const root = try tmp.dir.realPathFileAlloc(io, ".", a);
+    defer a.free(root);
+    const b = try Browser.init(a, io, root, root, root);
+    defer b.deinit();
+    try waitLoaded(b);
+    _ = b.sel.takeReveal();
+
+    // Nothing selected: the cursor sits on the first row, and the re-sort moves it,
+    // but the view must stay where it is (the top, the bottom, wherever).
+    b.setSort(.size, true);
+    try testing.expect(!b.sel.takeReveal());
+
+    // A selection is followed to where the re-sort put it.
+    b.sel.click(indexOf(b, "a.txt").?);
+    _ = b.sel.takeReveal();
+    b.setSort(.name, true);
+    try testing.expect(b.sel.takeReveal());
 }
 
 test "browser surfaces a scan error for a missing directory" {
