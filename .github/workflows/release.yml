@@ -1,0 +1,62 @@
+# Every push to master builds ZFD, runs the tests, and publishes a GitHub release
+# with the Arch package attached. A commit with [skip ci] in its message is not
+# built or released.
+#
+# Versions: each build is pkgver <PKGBUILD pkgver>.r<run number>.g<commit>, e.g.
+# 0.0.1.r7.g1a2b3c4, so every release sorts newer than the one before it (and
+# newer than local 0.0.1-<pkgrel> builds) and `pacman -U` sees it as an upgrade.
+name: Release
+
+on:
+  push:
+    branches: [master]
+
+permissions:
+  contents: write # create the release and its tag
+
+concurrency:
+  group: release
+  cancel-in-progress: false # releases go out in push order
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - name: Install build dependencies
+        run: |
+          pacman -Syu --noconfirm --needed git github-cli zig pkgconf \
+            glfw libglvnd libx11 libxext systemd-libs
+
+      - uses: actions/checkout@v4
+
+      - name: Version
+        id: ver
+        run: |
+          base=$(sed -n 's/^pkgver=//p' packaging/arch/PKGBUILD)
+          ver="${base}.r${GITHUB_RUN_NUMBER}.g${GITHUB_SHA::7}"
+          echo "ver=$ver" >> "$GITHUB_OUTPUT"
+          echo "tag=v${base}.r${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+          sed -i "s/^pkgver=.*/pkgver=${ver}/; s/^pkgrel=.*/pkgrel=1/" packaging/arch/PKGBUILD
+
+      - name: Test
+        run: zig build test
+
+      # makepkg refuses to run as root. -d: the runtime-only depends
+      # (xdg-desktop-portal) aren't needed to build.
+      - name: Build package
+        run: |
+          useradd -m builder
+          chown -R builder: .
+          su builder -c 'cd packaging/arch && makepkg -f -d'
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ steps.ver.outputs.tag }}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "ZFD ${{ steps.ver.outputs.ver }}" \
+            --generate-notes \
+            packaging/arch/zfd-*.pkg.tar.zst
