@@ -16,7 +16,7 @@
 
 pkgname=zfd
 pkgver=0.0.1
-pkgrel=155
+pkgrel=156
 pkgdesc="Zig File Dialog: xdg-desktop-portal FileChooser backend + tabbed explorer, Dear ImGui on GLFW (no GTK/Qt)"
 arch=('x86_64')
 url="https://github.com/nielsproest/zfd"
