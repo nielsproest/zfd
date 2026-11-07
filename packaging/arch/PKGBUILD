@@ -30,7 +30,7 @@ depends=('glfw' 'libglvnd' 'libx11' 'libxext' 'systemd-libs' 'xdg-desktop-portal
 # zig 0.17 builds it; pkgconf resolves pkg-config (glfw3/libsystemd) during the
 # build. Dear ImGui, cimgui and the translate-c package (build.zig.zon) are
 # fetched into zig-pkg/ on the first build.
-makedepends=('zig' 'pkgconf')
+makedepends=('zig' 'pkgconf' 'libxrandr') # libxrandr: glfw3native.h includes Xrandr.h
 # Optional CLI tools we shell out to (never linked); each feature hides when its
 # tool is absent, like GoFileDialog's terminalCandidates pattern.
 optdepends=('xdg-utils: open files in their default app (xdg-open)'

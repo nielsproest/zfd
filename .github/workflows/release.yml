@@ -27,9 +27,9 @@ jobs:
       - name: Install build dependencies
         run: |
           pacman -Syu --noconfirm --needed git github-cli zig pkgconf \
-            glfw libglvnd libx11 libxext systemd-libs
+            glfw libglvnd libx11 libxext libxrandr systemd-libs
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Version
         id: ver
