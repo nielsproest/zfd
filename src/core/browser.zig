@@ -105,21 +105,13 @@ pub const Browser = struct {
     // The listing came with names only: the details (sizes, dates, tags) arrive from
     // this pool, folded in by update (see details.zig).
     details: ?details_mod.Filler = null,
-    // A new listing waiting for its details (names only so far) while the old one
-    // stays on screen, when its view sorts, groups or filters by them: it's shown
-    // once they're all in, or after `stage_ms`, whichever is first, so it doesn't
-    // open in one order and reshuffle. A folder in name order opens at once.
-    staged: ?scan.Listing = null,
     details_stopping: std.ArrayList(details_mod.Filler) = .empty, // let go, workers finishing
     // How long deinit waits for details workers to stop: at exit they mustn't outlive
     // the allocator; a closed tab's can finish on their own (see letGo).
     details_wait_ms: u64 = 300,
-    staged_ns: u64 = 0,
-    // When goTo started the load (0 once the next folder is on screen). The folder
-    // before stays shown for enter_ms; past that, the next one opens empty and its
-    // files appear as they come, so a slow folder is entered at once.
-    nav_ns: u64 = 0,
-    entered: bool = false, // the folder being opened is on screen, empty, still loading
+    // goTo started loading the next folder and it isn't on screen yet. If its names
+    // haven't come by the next frame, it opens empty and fills in as they're read.
+    navigating: bool = false,
     view_pending: bool = false, // the folder navigated to hasn't had its view applied yet
     details_buf: std.ArrayList(details_mod.Details) = .empty,
     details_dirty: bool = false, // the view's order or filter waits on details that arrived
@@ -281,8 +273,6 @@ pub const Browser = struct {
         const t0 = monoNs();
         for (self.details_stopping.items) |f| f.cancelWait(self.details_wait_ms -| (monoNs() - t0) / std.time.ns_per_ms);
         self.details_stopping.deinit(self.alloc);
-        if (self.staged) |l| l.deinit(self.alloc);
-        self.staged = null;
         self.details_buf.deinit(self.alloc);
         self.clearClimb();
         if (self.listing) |l| l.deinit(self.alloc);
@@ -951,12 +941,10 @@ pub const Browser = struct {
         self.clearExpanded(); // opened subfolders belong to the folder too
         self.stopDeep();
         self.in_recent = virtual;
-        self.dropStaged(); // a folder we're leaving before it showed
         // The folder we're leaving stops looking up its details, so they don't hold
         // up reading the next one (on a share, they'd compete for it).
         self.stopDetails();
-        self.nav_ns = monoNs();
-        self.entered = false;
+        self.navigating = true;
         // Its view (layout, sort, …) is applied when its listing goes on screen, so
         // the folder still showing never flashes in the next one's layout.
         self.view_pending = true;
@@ -2404,16 +2392,6 @@ pub const Browser = struct {
 
     /// startDetails starts looking up the new listing's details, when it came without.
 
-    /// stage_ms is how long a new folder whose view depends on its details (sorted
-    /// by size or date, say) waits for them before it's shown without them; the
-    /// folder before stays meanwhile.
-    const stage_ms = 150;
-
-    /// enter_ms is how long the folder before stays when the next one's names
-    /// haven't come yet; then the next opens empty and fills in as they're read.
-    /// Not 0: on a local disk the names take a few ms, and every folder would flash
-    /// empty for a frame first.
-    const enter_ms = 50;
 
     /// startDetails starts looking up `l`'s details (a listing of `dir`).
     fn startDetails(self: *Browser, l: *const scan.Listing, dir: []const u8) void {
@@ -2421,14 +2399,6 @@ pub const Browser = struct {
         const workers = if (self.details_workers > 0) self.details_workers else details_mod.defaultWorkers();
         self.details = details_mod.Filler.start(self.io, self.alloc, dir, l.entries, workers, self.wake) catch null;
         self.details_sorted_ns = monoNs();
-    }
-
-    fn dropStaged(self: *Browser) void {
-        if (self.staged) |l| {
-            self.stopDetails(); // its lookups
-            l.deinit(self.alloc);
-        }
-        self.staged = null;
     }
 
     /// stopDetails stops the lookups (without waiting: they finish the entry they're
@@ -2473,16 +2443,14 @@ pub const Browser = struct {
         self.details_buf.clearRetainingCapacity();
         f.take(&self.details_buf, 50_000);
         const done = f.finished();
-        // Into the staged listing while it waits, else the one on screen.
-        const staged = self.staged != null;
-        const target: ?*scan.Listing = if (self.staged) |*l| l else if (self.listing) |*l| l else null;
+        const target: ?*scan.Listing = if (self.listing) |*l| l else null;
         if (target) |l| {
             for (self.details_buf.items) |d| {
                 if (d.idx < l.entries.len and l.entries[d.idx].link_target.len == 0) d.apply(&l.entries[d.idx]) else if (d.link_target.len > 0) self.alloc.free(d.link_target);
             }
             if (done) l.needs_details = false;
         } else for (self.details_buf.items) |d| if (d.link_target.len > 0) self.alloc.free(d.link_target);
-        if (!staged and self.details_buf.items.len > 0 and self.viewNeedsDetails()) self.details_dirty = true;
+        if (self.details_buf.items.len > 0 and self.viewNeedsDetails()) self.details_dirty = true;
         if (done) {
             f.cancel();
             self.details = null;
@@ -2501,11 +2469,8 @@ pub const Browser = struct {
     /// viewNeedsDetails reports whether the view's order, grouping or filter reads
     /// details (a sort by size or date, a tag filter, a search rule).
     fn viewNeedsDetails(self: *const Browser) bool {
-        return orderNeedsDetails(self.sort_order, self.group_by) or self.filterNeedsDetails();
-    }
-
-    /// filterNeedsDetails: the tag filter or the search looks at tags, dates or sizes.
-    fn filterNeedsDetails(self: *const Browser) bool {
+        if (self.sort_order.column != .name and self.sort_order.column != .type) return true;
+        if (self.group_by != .none and self.group_by != .kind) return true;
         if (self.tag_filter != 0) return true;
         if (self.search.items.len > 0) {
             var qbuf: [512]u8 = undefined;
@@ -2513,21 +2478,6 @@ pub const Browser = struct {
             if (q.tag != 0 or q.modified.any() or q.created.any() or q.size.any()) return true;
         }
         return false;
-    }
-
-    fn orderNeedsDetails(sort: scan.SortOrder, group: scan.GroupBy) bool {
-        if (sort.column != .name and sort.column != .type) return true;
-        return group != .none and group != .kind;
-    }
-
-    /// nextViewNeedsDetails is viewNeedsDetails for the folder being opened: its own
-    /// saved view when it hasn't been applied yet (it is when its listing lands).
-    fn nextViewNeedsDetails(self: *const Browser) bool {
-        if (self.view_pending) if (self.prefs) |p| {
-            const v = p.viewFor(self.location());
-            return orderNeedsDetails(v.sort, v.group) or self.filterNeedsDetails();
-        };
-        return self.viewNeedsDetails();
     }
 
     /// installListing puts listing `l` on screen (its details may still be arriving).
@@ -2549,8 +2499,7 @@ pub const Browser = struct {
         if (snap) |*sn| self.restoreSelection(sn, false);
         if (old) |o| o.deinit(self.alloc); // after the restore: snap borrowed its names
         self.reloading = false;
-        self.nav_ns = 0;
-        self.entered = false;
+        self.navigating = false;
     }
 
     /// carryDetails copies the details of the entries on screen onto the same-named
@@ -2587,7 +2536,6 @@ pub const Browser = struct {
     fn enterEmpty(self: *Browser) void {
         const none = self.alloc.alloc(scan.Entry, 0) catch return;
         self.installListing(.{ .entries = none });
-        self.entered = true;
     }
 
     fn applyPendingView(self: *Browser) void {
@@ -2634,22 +2582,13 @@ pub const Browser = struct {
         }
         if (self.deep_search != null) self.foldDeep(false);
         self.foldDetails();
-        // A staged listing goes on screen once its details are in, or it's waited long
-        // enough (the rest then fill in there).
-        if (self.staged != null and (self.details == null or monoNs() - self.staged_ns > stage_ms * std.time.ns_per_ms)) {
-            const l = self.staged.?;
-            self.staged = null;
-            self.installListing(l);
-            self.loading = false;
-            return true;
-        }
-        // The next folder is slow to come: open it now, empty (it fills in when read).
-        if (self.loading and self.nav_ns != 0 and self.staged == null and monoNs() - self.nav_ns > enter_ms * std.time.ns_per_ms) {
-            self.nav_ns = 0;
-            self.enterEmpty();
-        }
         const expanded = self.pollExpand();
-        const res = self.scanner.poll() orelse return expanded;
+        const res = self.scanner.poll() orelse {
+            // The next folder's names haven't come by this frame: open it now, empty
+            // (they appear as they're read), instead of leaving the last one up.
+            if (self.loading and self.navigating) self.enterEmpty();
+            return expanded;
+        };
         switch (res) {
             .listing => |l| if (blk: {
                 // A reload: what's still there keeps its known details while they're
@@ -2665,25 +2604,13 @@ pub const Browser = struct {
                 self.reloading = false;
                 self.restartDeep();
                 return true;
-            } else if (l.needs_details and l.entries.len > 0 and !self.entered and self.nextViewNeedsDetails()) {
-                // Names only, and its order depends on the rest: wait (briefly) for
-                // them before showing it, or it would open in one order and reshuffle.
-                // Not when it's on screen already, empty: then the names show at once.
-                self.dropStaged();
-                self.stopDetails(); // the folder on screen is on its way out
-                self.staged = l;
-                self.staged_ns = monoNs();
-                self.startDetails(&self.staged.?, self.dir);
-                return true; // still loading
             } else {
                 self.stopDetails();
                 self.installListing(l);
                 if (self.listing) |*shown| self.startDetails(shown, self.dir); // (names only: the rest fill in)
             },
             .err => |e| {
-                self.dropStaged();
-                self.nav_ns = 0;
-                self.entered = false;
+                self.navigating = false;
                 self.applyPendingView();
                 // A favourite that isn't there: one level up, and try again.
                 if (self.climb_from != null and (e == error.FileNotFound or e == error.NotDir) and self.dir.len > 1) {
