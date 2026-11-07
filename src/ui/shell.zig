@@ -2593,7 +2593,7 @@ pub const Shell = struct {
         if (!has) return;
         const e = b.at(b.sel.cursor);
         c.igSpacing();
-        c.igPushFont(null, fs * 1.15);
+        cimgui.pushFontTimes(1.15);
         c.igPushTextWrapPos(0);
         cimgui.textUnformatted(std.fs.path.basename(e.name));
         c.igPopTextWrapPos();
@@ -4829,9 +4829,8 @@ pub const Shell = struct {
         const h = toolbarH();
         // Like Finder: the title is only as wide as its text, and clicking it (left or
         // right) drops down the enclosing folders. Typing a path is Ctrl+L.
-        const size = c.igGetFontSize() * 1.3;
         const pad = c.igGetFontSize() * 0.4;
-        c.igPushFont(null, size);
+        cimgui.pushFontTimes(1.3);
         // A long name is cut short with "…" so it never pushes the buttons along.
         const z = ellipsize(&tb, title, width - pad * 2);
         const ts = c.igCalcTextSize(z.ptr, null, false, -1);
@@ -4847,7 +4846,7 @@ pub const Shell = struct {
         const open = c.igIsPopupOpen_Str("##titlemenu", 0);
         if (hovered or open)
             c.ImDrawList_AddRectFilled(dl, pos, cimgui.vec2(pos.x + bw, pos.y + h), c.igGetColorU32_Col(if (open) c.ImGuiCol_ButtonActive else c.ImGuiCol_ButtonHovered, 1), c.igGetStyle().*.FrameRounding, 0);
-        c.igPushFont(null, size);
+        cimgui.pushFontTimes(1.3);
         c.ImDrawList_PushClipRect(dl, pos, cimgui.vec2(pos.x + bw, pos.y + h), true);
         c.ImDrawList_AddText_Vec2(dl, cimgui.vec2(pos.x + pad, pos.y + (h - ts.y) * 0.5), c.igGetColorU32_Col(c.ImGuiCol_Text, 1), z.ptr, null);
         c.ImDrawList_PopClipRect(dl);

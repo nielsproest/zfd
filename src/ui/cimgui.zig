@@ -185,6 +185,15 @@ pub fn textUnformatted(s: []const u8) void {
 }
 
 /// vec2 / vec4 build cimgui's by-value vector structs tersely.
+/// pushFontTimes pushes the font at `k` times the interface's text size. igPushFont
+/// takes a size before ImGui's global scale (the desktop's and the zoom setting), and
+/// scales it itself: one made from igGetFontSize, already scaled, came out scaled
+/// twice (at 150%, a 1.3x title was shown 2.9x the size of the text). Pop with
+/// igPopFont.
+pub fn pushFontTimes(k: f32) void {
+    c.igPushFont(null, c.igGetStyle().*.FontSizeBase * k);
+}
+
 pub fn vec2(x: f32, y: f32) c.ImVec2_c {
     return .{ .x = x, .y = y };
 }

@@ -663,7 +663,7 @@ pub const ViewActions = struct {
         const nm = std.mem.sliceTo(&self.prop_name_orig, 0);
         icons.draw(c.igGetWindowDrawList(), .{ .name = @constCast(nm), .kind = self.prop_kind }, head_pos.x, head_pos.y, icon_sz, false);
         c.igIndent(icon_sz + fs * 0.6);
-        c.igPushFont(null, fs * 1.15);
+        cimgui.pushFontTimes(1.15);
         cimgui.textUnformatted(nm);
         c.igPopFont();
         c.igPushStyleColor_Vec4(c.ImGuiCol_Text, theme.dim());
