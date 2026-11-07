@@ -192,6 +192,8 @@ pub const Shell = struct {
     ql_open: bool = false, // the Quick Look window (Space)
     ql_hovered: bool = false, // the pointer was over it last frame (its Ctrl+scroll zooms the picture)
     ql_own_window: bool = false, // it had an OS window of its own last frame (not inside the main one)
+    ql_wm_full: bool = false, // the window manager was last asked for full screen (or out of it)
+    ql_wm_handle: ?*anyopaque = null, // ...for this window of its own (GLFW)
     // Browsing inside Quick Look (a double-click in a folder's view): what it shows
     // instead of the selected item (owned), and that item's path when it started
     // (owned): picking another item in the window, or closing it, ends it.
@@ -2341,6 +2343,16 @@ pub const Shell = struct {
         defer c.igEnd();
         self.ql_hovered = open and c.igIsWindowHovered(c.ImGuiHoveredFlags_RootAndChildWindows);
         self.ql_own_window = c.igGetWindowViewport() != c.igGetMainViewport();
+        // Full screen is the window manager's (over the panels), for its own window;
+        // asked for whenever that changes (and when its window is new).
+        if (self.ql_own_window) {
+            const handle = c.igGetWindowViewport().*.PlatformHandle;
+            if (handle != null and (self.ql_full != self.ql_wm_full or handle != self.ql_wm_handle)) {
+                x11.setFullscreen(handle, self.ql_full);
+                self.ql_wm_full = self.ql_full;
+                self.ql_wm_handle = handle;
+            }
+        } else self.ql_wm_handle = null;
         if (!open) return;
         // Escape leaves full screen first, as on macOS; then it closes Quick Look.
         if (self.ql_open and c.igIsKeyPressed_Bool(c.ImGuiKey_Escape, false) and !cimgui.zfd_want_text_input()) {

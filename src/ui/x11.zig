@@ -718,6 +718,26 @@ pub fn takeMerge(glfw: ?*anyopaque) ?x.Window {
     return @intCast(v.*);
 }
 
+/// setFullscreen asks the window manager to make the (mapped) window full screen
+/// or take it out again: _NET_WM_STATE_FULLSCREEN, which covers the panels. A window
+/// merely sized to the screen stays under them.
+pub fn setFullscreen(glfw: ?*anyopaque, on: bool) void {
+    const dpy = display() orelse return;
+    const w = window(glfw);
+    if (w == 0) return;
+    var ev: x.XEvent = std.mem.zeroes(x.XEvent);
+    ev.xclient.type = x.ClientMessage;
+    ev.xclient.window = w;
+    ev.xclient.message_type = x.XInternAtom(dpy, "_NET_WM_STATE", 0);
+    ev.xclient.format = 32;
+    ev.xclient.data.l[0] = if (on) 1 else 0; // _NET_WM_STATE_ADD / _REMOVE
+    ev.xclient.data.l[1] = @intCast(x.XInternAtom(dpy, "_NET_WM_STATE_FULLSCREEN", 0));
+    ev.xclient.data.l[2] = 0;
+    ev.xclient.data.l[3] = 1; // from an application
+    _ = x.XSendEvent(dpy, x.DefaultRootWindow(dpy), 0, x.SubstructureRedirectMask | x.SubstructureNotifyMask, &ev);
+    _ = x.XFlush(dpy);
+}
+
 /// ChildFocus is how a window ImGui opened outside the main one may take focus.
 pub const ChildFocus = enum {
     normal, // a dragged-out panel that can be focused like any window
