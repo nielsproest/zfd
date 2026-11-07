@@ -197,6 +197,7 @@ pub const Shell = struct {
     // (owned): picking another item in the window, or closing it, ends it.
     ql_path: ?[]u8 = null,
     ql_from: ?[]u8 = null,
+    ql_fwd: ?[]u8 = null, // where Back stepped out of: Forward goes back in (owned)
     ql_zoom: quicklook.Zoom = .{}, // its picture's zoom (the Preview pane's stays fitted)
     ql_full: bool = false, // ... filling the screen (its arrows button)
     ql_rect: [4]f32 = .{ 0, 0, 0, 0 }, // its place before it filled the screen (x, y, w, h)
@@ -2182,6 +2183,14 @@ pub const Shell = struct {
         var buf: [std.fs.max_path_bytes]u8 = undefined;
         const b = self.activeBrowser();
         const cur = cursorPath(b, &buf);
+        // A Forward step left over from the item it came out of, once another's picked.
+        if (self.ql_path == null) if (self.ql_fwd) |f| {
+            const fits = if (cur) |cp| std.mem.eql(u8, std.fs.path.dirname(f) orelse "", cp) else false;
+            if (!fits) {
+                self.alloc.free(f);
+                self.ql_fwd = null;
+            }
+        };
         if (self.ql_path) |p| {
             const same = if (cur) |cp| (if (self.ql_from) |f| std.mem.eql(u8, cp, f) else false) else false;
             if (same) return self.preview.update(self.io, self.alloc, p, 0);
@@ -2195,6 +2204,8 @@ pub const Shell = struct {
     /// shows) in place of the selected item, as a double-click in a folder's view does.
     fn qlBrowse(self: *Shell, b: *Browser, path: []const u8) void {
         const dup = self.alloc.dupe(u8, path) catch return;
+        if (self.ql_fwd) |f| self.alloc.free(f); // a new way in: nothing to go forward to
+        self.ql_fwd = null;
         if (self.ql_from == null) {
             var buf: [std.fs.max_path_bytes]u8 = undefined;
             const cp = cursorPath(b, &buf) orelse {
@@ -2215,18 +2226,37 @@ pub const Shell = struct {
     fn qlBack(self: *Shell) void {
         const p = self.ql_path orelse return;
         self.preview.pickWhenIn(std.fs.path.basename(p)); // where it came back from
+        if (self.ql_fwd) |f| self.alloc.free(f);
+        self.ql_fwd = self.alloc.dupe(u8, p) catch null; // (Forward goes back in)
+        if (self.ql_from) |f| if (std.mem.eql(u8, std.fs.path.dirname(p) orelse "", f)) {
+            // Out to the selected item itself: browsing ends, Forward still knows the way.
+            const keep = self.ql_fwd;
+            self.ql_fwd = null;
+            self.qlStopBrowsing();
+            self.ql_fwd = keep;
+            return;
+        };
         const parent = std.fs.path.dirname(p) orelse return self.qlStopBrowsing();
-        if (self.ql_from) |f| if (std.mem.eql(u8, parent, f)) return self.qlStopBrowsing();
         const dup = self.alloc.dupe(u8, parent) catch return;
         self.alloc.free(p);
         self.ql_path = dup;
     }
 
+    /// qlForward steps back into what Back stepped out of.
+    fn qlForward(self: *Shell) void {
+        const f = self.ql_fwd orelse return;
+        self.ql_fwd = null;
+        defer self.alloc.free(f);
+        self.qlBrowse(self.activeBrowser(), f);
+    }
+
     fn qlStopBrowsing(self: *Shell) void {
         if (self.ql_path) |p| self.alloc.free(p);
         if (self.ql_from) |f| self.alloc.free(f);
+        if (self.ql_fwd) |f| self.alloc.free(f);
         self.ql_path = null;
         self.ql_from = null;
+        self.ql_fwd = null;
     }
 
     /// qlFitSize is the size Quick Look takes for what it shows, as macOS sizes it: an
@@ -3138,9 +3168,18 @@ pub const Shell = struct {
     /// browser-only, which is why the dialog used to ignore the thumb buttons.
     /// Back uses backOrUp so it climbs to the parent when there's no history yet,
     /// instead of silently doing nothing (the toolbar keeps a dedicated Up button).
-    fn handleMouseNav(_: *Shell, b: *Browser) void {
-        if (c.igIsMouseClicked_Bool(3, false)) b.backOrUp();
-        if (c.igIsMouseClicked_Bool(4, false)) b.forward();
+    fn handleMouseNav(self: *Shell, b: *Browser) void {
+        const back = c.igIsMouseClicked_Bool(3, false);
+        const fwd = c.igIsMouseClicked_Bool(4, false);
+        // Over Quick Look they step through what it browsed into, not the window
+        // behind it (they used to do both).
+        if (self.ql_open and self.ql_hovered) {
+            if (back) self.qlBack();
+            if (fwd) self.qlForward();
+            return;
+        }
+        if (back) b.backOrUp();
+        if (fwd) b.forward();
     }
 
     /// handleFocusKeys: Ctrl+L → path bar, Ctrl+F → search box. Separate from
