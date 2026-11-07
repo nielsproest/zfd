@@ -144,6 +144,7 @@ pub const Shell = struct {
     load_start: f64 = 0, // when load_tab started loading (ImGui time)
     show_trash: bool = false, // the "Open trashcan" view is open
     trash_items: []core.trash.Item = &.{}, // cached trash listing (owned)
+    trash_sorted: bool = false, // trash_items is in the Trash window's chosen order
     net_mounts: []mounts_mod.Mount = &.{}, // network + gvfs/kio shares (owned)
     sidebar_w: f32 = 190, // resizable via the splitter
     min_size: [2]c_int = .{ 0, 0 }, // the window's size limit as last set (applyMinSize)
@@ -1205,12 +1206,20 @@ pub const Shell = struct {
 
             if (self.trash_items.len == 0) {
                 cimgui.textUnformatted("Trash is empty.");
-            } else if (c.igBeginTable("##trashtbl", 3, c.ImGuiTableFlags_RowBg | c.ImGuiTableFlags_ScrollY | c.ImGuiTableFlags_BordersInnerV | c.ImGuiTableFlags_Resizable, cimgui.vec2(0, 0), 0)) {
+            } else if (c.igBeginTable("##trashtbl", 4, c.ImGuiTableFlags_RowBg | c.ImGuiTableFlags_ScrollY | c.ImGuiTableFlags_BordersInnerV | c.ImGuiTableFlags_Resizable | c.ImGuiTableFlags_Sortable, cimgui.vec2(0, 0), 0)) {
                 c.igTableSetupColumn("Name", c.ImGuiTableColumnFlags_WidthStretch, 0, 0);
-                c.igTableSetupColumn("Original location", c.ImGuiTableColumnFlags_WidthStretch, 0, 0);
-                c.igTableSetupColumn("", c.ImGuiTableColumnFlags_WidthFixed, 150, 0);
+                c.igTableSetupColumn("Original location", c.ImGuiTableColumnFlags_WidthStretch, 0, 1);
+                // Newest trashed first, as Finder's Trash opens.
+                c.igTableSetupColumn("Date Trashed", c.ImGuiTableColumnFlags_WidthFixed | c.ImGuiTableColumnFlags_DefaultSort | c.ImGuiTableColumnFlags_PreferSortDescending, @round(c.igGetFontSize() * 9), 2);
+                c.igTableSetupColumn("", c.ImGuiTableColumnFlags_WidthFixed | c.ImGuiTableColumnFlags_NoSort, 150, 3);
                 c.igTableSetupScrollFreeze(0, 1);
                 c.igTableHeadersRow();
+                if (c.igTableGetSortSpecs()) |specs| if (specs.*.SpecsDirty or !self.trash_sorted) {
+                    if (specs.*.SpecsCount > 0) sortTrash(self.trash_items, @intCast(specs.*.Specs[0].ColumnUserID), specs.*.Specs[0].SortDirection == c.ImGuiSortDirection_Descending);
+                    specs.*.SpecsDirty = false;
+                    self.trash_sorted = true;
+                };
+                const now = table.nowSecs();
 
                 var do_restore: ?usize = null;
                 var do_remove: ?usize = null;
@@ -1221,6 +1230,9 @@ pub const Shell = struct {
                     _ = c.igTableSetColumnIndex(1);
                     cimgui.textUnformatted(item.orig_path);
                     _ = c.igTableSetColumnIndex(2);
+                    var tb: [32]u8 = undefined;
+                    cimgui.textUnformatted(if (item.deleted > 0) core.scan.formatDateFriendly(&tb, item.deleted, now) else "--");
+                    _ = c.igTableSetColumnIndex(3);
                     var rbuf: [24]u8 = undefined;
                     const rid = std.mem.printSentinel(&rbuf, "Restore##{d}", .{i}, 0) catch continue;
                     if (c.igSmallButton(rid.ptr)) do_restore = i;
@@ -1408,6 +1420,7 @@ pub const Shell = struct {
                 // The trash's new contents replace the old.
                 if (self.trash_items.len > 0) core.trash.free(self.alloc, self.trash_items);
                 self.trash_items = a.trash;
+                self.trash_sorted = false;
                 continue;
             }
             defer a.deinit(self.alloc);
@@ -6010,6 +6023,25 @@ fn cursorPath(b: *Browser, buf: []u8) ?[]const u8 {
     if (b.count() == 0 or b.sel.cursor >= b.count()) return null;
     const dir = b.shownDir();
     return std.mem.print(buf, "{s}/{s}", .{ if (std.mem.eql(u8, dir, "/")) "" else dir, b.at(b.sel.cursor).name }) catch null;
+}
+
+/// sortTrash orders the Trash window's items by column (0 name, 1 where it was,
+/// 2 when it was trashed), descending if asked, ties by name.
+fn sortTrash(items: []core.trash.Item, column: u32, descending: bool) void {
+    const Ctx = struct {
+        col: u32,
+        desc: bool,
+        fn less(cx: @This(), a: core.trash.Item, b: core.trash.Item) bool {
+            const ord: std.math.Order = switch (cx.col) {
+                1 => std.mem.order(u8, a.orig_path, b.orig_path),
+                2 => std.math.order(a.deleted, b.deleted),
+                else => .eq,
+            };
+            const o = if (ord != .eq) ord else std.ascii.orderIgnoreCase(a.name, b.name);
+            return if (cx.desc) o == .gt else o == .lt;
+        }
+    };
+    std.mem.sort(core.trash.Item, items, Ctx{ .col = column, .desc = descending }, Ctx.less);
 }
 
 /// infoRow is a Finder "Information" line: the label dim on the left, the value

@@ -14,6 +14,7 @@ pub const Item = struct {
     name: []u8, // basename under files/ (owned)
     orig_path: []u8, // decoded, absolute original path (owned)
     trash_dir: []u8, // the trash dir this item lives in (owned): home or a top-dir trash
+    deleted: i64 = 0, // when it was trashed (DeletionDate; Unix seconds; 0 = unknown)
 };
 
 /// list returns the home-trash contents (name + original path). Empty if the trash
@@ -57,7 +58,8 @@ fn appendDir(io: std.Io, alloc: std.mem.Allocator, trash_dir: []const u8, topdir
     defer d.close(io);
     var it = d.iterate();
     while (it.next(io) catch null) |e| {
-        const orig = readOrigPath(io, alloc, trash_dir, topdir, e.name) catch alloc.dupe(u8, "") catch continue;
+        var deleted: i64 = 0;
+        const orig = readOrigPath(io, alloc, trash_dir, topdir, e.name, &deleted) catch alloc.dupe(u8, "") catch continue;
         const name = alloc.dupe(u8, e.name) catch {
             alloc.free(orig);
             continue;
@@ -67,7 +69,7 @@ fn appendDir(io: std.Io, alloc: std.mem.Allocator, trash_dir: []const u8, topdir
             alloc.free(name);
             continue;
         };
-        items.append(alloc, .{ .name = name, .orig_path = orig, .trash_dir = dir }) catch {
+        items.append(alloc, .{ .name = name, .orig_path = orig, .trash_dir = dir, .deleted = deleted }) catch {
             alloc.free(orig);
             alloc.free(name);
             alloc.free(dir);
@@ -82,11 +84,12 @@ fn byName(_: void, a: Item, b: Item) bool {
 /// readOrigPath reads + decodes the original Path from name's .trashinfo. For a top-dir
 /// trash (topdir non-empty) a relative Path is resolved against the top dir, so callers
 /// always get an absolute path.
-fn readOrigPath(io: std.Io, alloc: std.mem.Allocator, trash_dir: []const u8, topdir: []const u8, name: []const u8) ![]u8 {
+fn readOrigPath(io: std.Io, alloc: std.mem.Allocator, trash_dir: []const u8, topdir: []const u8, name: []const u8, deleted: *i64) ![]u8 {
     const info_path = try alloc.print("{s}/info/{s}.trashinfo", .{ trash_dir, name });
     defer alloc.free(info_path);
     const content = try Dir.cwd().readFileAlloc(io, info_path, alloc, .limited(1 << 16));
     defer alloc.free(content);
+    deleted.* = parseInfoDate(content);
     const encoded = parseInfoPath(content) orelse return error.NoPath;
     const decoded = try urlDecode(alloc, encoded);
     if (topdir.len > 0 and decoded.len > 0 and decoded[0] != '/') {
@@ -162,6 +165,44 @@ pub fn parseInfoPath(content: []const u8) ?[]const u8 {
         if (std.mem.startsWith(u8, line, "Path=")) return line[5..];
     }
     return null;
+}
+
+/// Tm is libc's struct tm, for mktime.
+const Tm = extern struct {
+    sec: c_int = 0,
+    min: c_int = 0,
+    hour: c_int = 0,
+    mday: c_int = 0,
+    mon: c_int = 0,
+    year: c_int = 0,
+    wday: c_int = 0,
+    yday: c_int = 0,
+    isdst: c_int = -1, // (work it out)
+    gmtoff: c_long = 0,
+    zone: ?[*:0]const u8 = null,
+};
+extern "c" fn mktime(tm: *Tm) i64;
+
+/// parseInfoDate reads a .trashinfo's DeletionDate ("2026-11-07T23:41:05", local
+/// time, as the spec has it) as Unix seconds, or 0 when there's none.
+pub fn parseInfoDate(content: []const u8) i64 {
+    var it = std.mem.splitScalar(u8, content, '\n');
+    while (it.next()) |raw| {
+        const line = std.mem.trim(u8, raw, " \t\r");
+        if (!std.mem.startsWith(u8, line, "DeletionDate=")) continue;
+        const v = line["DeletionDate=".len..];
+        if (v.len < 19 or v[4] != '-' or v[7] != '-' or v[10] != 'T' or v[13] != ':' or v[16] != ':') return 0;
+        const num = struct {
+            fn f(t: []const u8) c_int {
+                return std.fmt.parseInt(c_int, t, 10) catch -1;
+            }
+        }.f;
+        var tm: Tm = .{ .year = num(v[0..4]) - 1900, .mon = num(v[5..7]) - 1, .mday = num(v[8..10]), .hour = num(v[11..13]), .min = num(v[14..16]), .sec = num(v[17..19]) };
+        if (tm.mon < 0 or tm.mday < 1 or tm.hour < 0 or tm.min < 0 or tm.sec < 0) return 0;
+        const t = mktime(&tm);
+        return if (t < 0) 0 else t;
+    }
+    return 0;
 }
 
 /// urlDecode expands %XX escapes (per the trashinfo Path encoding). Owned result.
@@ -277,4 +318,13 @@ test "top-dir trash: a relative Path resolves against the mount point, and resto
     // After: restore puts it back at the resolved absolute location.
     try restore(io, a, items[0]);
     _ = Dir.cwd().statFile(io, restored, .{}) catch return error.NotRestored;
+}
+
+test "parseInfoDate reads the deletion date, in local time" {
+    const a = parseInfoDate("[Trash Info]\nPath=/x\nDeletionDate=2026-11-07T23:41:05\n");
+    const b = parseInfoDate("[Trash Info]\nDeletionDate=2026-11-07T23:42:05\nPath=/x\n");
+    try std.testing.expect(a > 0);
+    try std.testing.expectEqual(@as(i64, 60), b - a);
+    try std.testing.expectEqual(@as(i64, 0), parseInfoDate("[Trash Info]\nPath=/x\n"));
+    try std.testing.expectEqual(@as(i64, 0), parseInfoDate("DeletionDate=yesterday\n"));
 }
