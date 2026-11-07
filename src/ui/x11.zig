@@ -727,14 +727,23 @@ pub const ChildFocus = enum {
 };
 
 /// makeChildWindow marks `child` (an unmapped GLFW window ImGui opened outside the main
-/// one) as belonging to `parent`: transient for it, so the window manager keeps it
+/// one) as belonging to `parent`: a panel is transient for it, so the window manager keeps it
 /// above, minimizes and restores it with the main window, and no taskbar, pager or
 /// Alt+Tab entry of its own. A window that mustn't take focus says so before it's
 /// mapped: the WM activating it would raise `parent` along with it.
 pub fn makeChildWindow(child: ?*anyopaque, parent: ?*anyopaque, focus: ChildFocus) void {
     const dpy = display() orelse return;
     const w = window(child);
-    if (parent != null) _ = x.XSetTransientForHint(dpy, w, window(parent));
+    if (focus == .popup or focus == .tooltip) {
+        // Override-redirect, like any toolkit's tooltips and menus: the window manager
+        // leaves it alone entirely. Managed, it was stacked with the window it belongs
+        // to, and KWin raised that one each time a tooltip appeared, so pointing at a
+        // ZFD window behind another brought it forward. It shows above everything,
+        // and ImGui places it itself.
+        var attrs: x.XSetWindowAttributes = std.mem.zeroes(x.XSetWindowAttributes);
+        attrs.override_redirect = 1;
+        _ = x.XChangeWindowAttributes(dpy, w, x.CWOverrideRedirect, &attrs);
+    } else if (parent != null) _ = x.XSetTransientForHint(dpy, w, window(parent));
     if (focus != .normal) {
         // EWMH: a user time of 0 means "don't activate this window when it's mapped".
         const zero: c_long = 0;
