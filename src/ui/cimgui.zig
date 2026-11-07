@@ -61,7 +61,7 @@ pub extern fn zfd_enable_viewports() void;
 
 /// zfd_hook_viewport_windows calls `cb` with each secondary viewport's GLFW window
 /// right after it's created, before it's shown. Call after the GLFW backend init.
-pub extern fn zfd_hook_viewport_windows(cb: *const fn (?*anyopaque) callconv(.c) void) void;
+pub extern fn zfd_hook_viewport_windows(cb: *const fn (?*anyopaque, c_int) callconv(.c) void) void;
 
 /// zfd_viewports_enabled reports whether ImGui coordinates are desktop coordinates
 /// (multi-viewport on) rather than main-window ones.

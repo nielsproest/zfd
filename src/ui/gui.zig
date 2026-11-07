@@ -348,8 +348,17 @@ fn startupId(buf: []u8) ?[]const u8 {
     return x11.newStartupId(g_main_window, buf);
 }
 
-fn onViewportWindow(w: ?*anyopaque) callconv(.c) void {
-    x11.makeChildWindow(w, g_main_window);
+fn onViewportWindow(w: ?*anyopaque, flags: c_int) callconv(.c) void {
+    // Tooltips, menus and popups are never to take focus (ImGui marks them so), and
+    // the window manager must be told: activating one raised the ZFD window it
+    // belongs to, so merely pointing at a window behind brought it forward.
+    const focus: x11.ChildFocus = if (flags & c.ImGuiViewportFlags_NoFocusOnClick != 0)
+        (if (flags & c.ImGuiViewportFlags_TopMost != 0) .tooltip else .popup)
+    else if (flags & c.ImGuiViewportFlags_NoFocusOnAppearing != 0)
+        .not_on_map
+    else
+        .normal;
+    x11.makeChildWindow(w, g_main_window, focus);
     // A window dragged out of the main one (or the tab ghost) gets an OS window of
     // its own. It's shown before it's drawn, and a frame drawn while X is still
     // mapping it can be lost: draw the next few no matter what, or it stays blank

@@ -718,14 +718,41 @@ pub fn takeMerge(glfw: ?*anyopaque) ?x.Window {
     return @intCast(v.*);
 }
 
+/// ChildFocus is how a window ImGui opened outside the main one may take focus.
+pub const ChildFocus = enum {
+    normal, // a dragged-out panel that can be focused like any window
+    not_on_map, // focusable, but not activated when it appears
+    popup, // a menu or popup: never focused (its keys come through the main window)
+    tooltip, // a tooltip: never focused
+};
+
 /// makeChildWindow marks `child` (an unmapped GLFW window ImGui opened outside the main
 /// one) as belonging to `parent`: transient for it, so the window manager keeps it
 /// above, minimizes and restores it with the main window, and no taskbar, pager or
-/// Alt+Tab entry of its own.
-pub fn makeChildWindow(child: ?*anyopaque, parent: ?*anyopaque) void {
+/// Alt+Tab entry of its own. A window that mustn't take focus says so before it's
+/// mapped: the WM activating it would raise `parent` along with it.
+pub fn makeChildWindow(child: ?*anyopaque, parent: ?*anyopaque, focus: ChildFocus) void {
     const dpy = display() orelse return;
     const w = window(child);
     if (parent != null) _ = x.XSetTransientForHint(dpy, w, window(parent));
+    if (focus != .normal) {
+        // EWMH: a user time of 0 means "don't activate this window when it's mapped".
+        const zero: c_long = 0;
+        _ = x.XChangeProperty(dpy, w, x.XInternAtom(dpy, "_NET_WM_USER_TIME", 0), x.XA_CARDINAL, 32, x.PropModeReplace, @ptrCast(&zero), 1);
+    }
+    if (focus == .popup or focus == .tooltip) {
+        // ICCCM: it never takes keyboard focus. And its type, which a WM never
+        // activates (KWin keeps them above their window, too).
+        if (x.XAllocWMHints()) |hints| {
+            hints.*.flags = x.InputHint;
+            hints.*.input = 0;
+            _ = x.XSetWMHints(dpy, w, hints);
+            _ = x.XFree(hints);
+        }
+        const tname = if (focus == .tooltip) "_NET_WM_WINDOW_TYPE_TOOLTIP" else "_NET_WM_WINDOW_TYPE_POPUP_MENU";
+        var wtype: c_long = @intCast(x.XInternAtom(dpy, tname, 0));
+        _ = x.XChangeProperty(dpy, w, x.XInternAtom(dpy, "_NET_WM_WINDOW_TYPE", 0), x.XA_ATOM, 32, x.PropModeReplace, @ptrCast(&wtype), 1);
+    }
     var states = [_]c_long{
         @intCast(x.XInternAtom(dpy, "_NET_WM_STATE_SKIP_TASKBAR", 0)),
         @intCast(x.XInternAtom(dpy, "_NET_WM_STATE_SKIP_PAGER", 0)),

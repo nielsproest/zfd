@@ -151,13 +151,14 @@ extern "C" bool zfd_viewports_enabled(void) {
 // OS window made by the GLFW backend. We wrap the backend's Platform_CreateWindow so
 // `cb` sees each new GLFW window before it's shown (Platform_ShowWindow runs later),
 // in time to mark it as belonging to the main window: no taskbar entry of its own,
-// minimized and raised together with it.
-typedef void (*zfd_viewport_cb)(void *glfw_window);
+// minimized and raised together with it. `flags` are the viewport's ImGuiViewportFlags
+// (whether it may take focus, whether it's a tooltip).
+typedef void (*zfd_viewport_cb)(void *glfw_window, int flags);
 static zfd_viewport_cb g_vp_cb = nullptr;
 static void (*g_vp_orig_create)(ImGuiViewport *) = nullptr;
 static void zfd_vp_create(ImGuiViewport *vp) {
     g_vp_orig_create(vp);
-    if (g_vp_cb && vp->PlatformHandle) g_vp_cb(vp->PlatformHandle);
+    if (g_vp_cb && vp->PlatformHandle) g_vp_cb(vp->PlatformHandle, (int)vp->Flags);
 }
 extern "C" void zfd_hook_viewport_windows(zfd_viewport_cb cb) {
     ImGuiPlatformIO &pio = ImGui::GetPlatformIO();
