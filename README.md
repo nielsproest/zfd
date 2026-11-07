@@ -1,5 +1,7 @@
 # ZFD: Zig File Dialog
 
+![ZFD's icon view, a picture's details in the Preview pane, in the blocky font](docs/screenshot.png)
+
 A **Zig** rewrite of [GoFileDialog](../GoFileDialog): an xdg-desktop-portal
 FileChooser backend plus a standalone tabbed file explorer, sharing one Dear ImGui
 UI. Sister-project experiment to test whether Zig (and a non-SDL windowing layer)
