@@ -227,7 +227,7 @@ pub const Browser = struct {
         errdefer self.ops.deinit();
         try self.usage.start();
         errdefer self.usage.deinit();
-        self.watch = DirWatch.init(io, alloc); // (none: no auto-refresh, F5 still works)
+        self.watch = DirWatch.init(io); // (none: no auto-refresh, F5 still works)
         try self.history.append(alloc, try alloc.dupe(u8, start_dir)); // seed history
         if (recent.isUri(start_dir)) {
             alloc.free(self.dir);
@@ -2377,7 +2377,13 @@ pub const Browser = struct {
     /// pollWatch drains pending inotify events and reloads the folder when they have
     /// settled. Non-blocking; called from update().
     fn pollWatch(self: *Browser) void {
-        const got = self.watch.changed();
+        var got = self.watch.changed();
+        // The watch went in on its own thread while the folder was being read: if
+        // the folder changed in between, no event came for it. Its listing was read
+        // at another modification time then (0 = unknown on either side: skip).
+        if (!self.loading) if (self.watch.takeAdded()) |mt| if (self.listing) |l| {
+            if (mt != 0 and l.dir_mtime != 0 and mt != l.dir_mtime) got = true;
+        };
         const now = monoNs();
         if (got) {
             if (self.watch_dirty_ns == 0) self.watch_dirty_ns = now;
@@ -2733,9 +2739,13 @@ fn isSelfOrDescendant(dst: []const u8, src: []const u8) bool {
 const testing = std.testing;
 
 // waitLoaded spins the frame-style update until a scan completes (bounded).
+/// Tests wait by the clock, not by a number of spins: a busy CI machine can take
+/// far longer than a desktop does for the same spins.
+const test_wait_ns: u64 = 10 * std.time.ns_per_s;
+
 fn waitLoaded(b: *Browser) !void {
-    var spins: usize = 0;
-    while ((b.loading or b.detailsPending()) and spins < 400_000) : (spins += 1) {
+    const t0 = monoNs();
+    while ((b.loading or b.detailsPending()) and monoNs() - t0 < test_wait_ns) {
         if (!b.update()) std.Thread.yield() catch {};
     }
     try testing.expect(!b.loading);
@@ -3172,8 +3182,8 @@ fn waitOps(b: *Browser) !void {
 }
 
 fn waitSettled(b: *Browser, name: []const u8, present: bool) !void {
-    var spins: usize = 0;
-    while (spins < 5_000_000) : (spins += 1) {
+    const t0 = monoNs();
+    while (monoNs() - t0 < test_wait_ns) {
         _ = b.update();
         if (!b.loading and (indexOf(b, name) != null) == present) break;
         std.Thread.yield() catch {};

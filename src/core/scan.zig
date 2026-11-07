@@ -49,6 +49,10 @@ pub const Listing = struct {
     // Names and kinds only so far: the details (sizes, dates, tags) are still to come
     // (details.zig fills them in off the render thread).
     needs_details: bool = false,
+    // The folder's own modification time, taken before its entries were read (0 =
+    // unknown). The folder watch compares it with the time it was added at, to
+    // catch a change that fell between the two.
+    dir_mtime: i64 = 0,
 
     pub fn deinit(self: Listing, alloc: std.mem.Allocator) void {
         for (self.entries) |e| {
@@ -80,7 +84,9 @@ pub fn readDirStoppable(io: std.Io, alloc: std.mem.Allocator, path: []const u8, 
 pub fn readDirOpts(io: std.Io, alloc: std.mem.Allocator, path: []const u8, stop: ?*const bool, details: bool) !Listing {
     var dir = try Dir.cwd().openDir(io, path, .{ .iterate = true });
     defer dir.close(io);
+    const mtime = mtimeNs(dir.handle, "");
     var l = try readDirWith(io, alloc, dir, stop, details);
+    l.dir_mtime = mtime;
     // Free space rides along with the listing: it's measured here, on the scanner
     // thread, because statfs on a stalled network mount blocks just like readdir does.
     if (fsSpace(dir.handle)) |sp| {
@@ -88,6 +94,18 @@ pub fn readDirOpts(io: std.Io, alloc: std.mem.Allocator, path: []const u8, stop:
         l.total_bytes = sp[1];
     }
     return l;
+}
+
+/// mtimeNs returns the modification time (ns since the epoch) of `path` relative to
+/// `dirfd`, or of `dirfd` itself when `path` is "", or 0 when it can't be read.
+/// Blocks like any stat on a slow share: worker threads only.
+pub fn mtimeNs(dirfd: std.posix.fd_t, path: [:0]const u8) i64 {
+    const linux = std.os.linux;
+    var st: linux.Statx = undefined;
+    const flags: u32 = if (path.len == 0) linux.AT.EMPTY_PATH else 0;
+    if (linux.errno(linux.statx(dirfd, path.ptr, flags, .{ .MTIME = true }, &st)) != .SUCCESS) return 0;
+    if (!st.mask.MTIME) return 0;
+    return st.mtime.sec * std.time.ns_per_s + st.mtime.nsec;
 }
 
 /// Linux x86_64 `struct statfs` (the kernel ABI; std has no wrapper).
