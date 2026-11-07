@@ -1,0 +1,29 @@
+# Builds ZFD and runs its tests on every push and pull request. A passing run on
+# master starts the Release workflow (release.yml).
+name: Test
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - name: Install build dependencies
+        run: |
+          pacman -Syu --noconfirm --needed git zig pkgconf \
+            glfw libglvnd libx11 libxext libxrandr systemd-libs
+
+      - uses: actions/checkout@v5
+
+      - name: Test
+        run: zig build test --summary all
+
+      - name: Build
+        run: zig build -Doptimize=ReleaseSafe -Dcpu=baseline

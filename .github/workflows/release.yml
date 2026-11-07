@@ -1,6 +1,7 @@
-# Every push to master builds ZFD, runs the tests, and publishes a GitHub release
-# with the Arch package attached. A commit with [skip ci] in its message is not
-# built or released.
+# Publishes a GitHub release with the Arch package attached, once the Test
+# workflow has passed on a push to master. It builds exactly the commit that was
+# tested. A commit with [skip ci] in its message is neither tested nor released.
+# "Run workflow" on the Actions tab releases the current master by hand.
 #
 # Versions: each build is pkgver <PKGBUILD pkgver>.r<run number>.g<commit>, e.g.
 # 0.0.1.r7.g1a2b3c4, so every release sorts newer than the one before it (and
@@ -8,9 +9,11 @@
 name: Release
 
 on:
-  push:
+  workflow_run:
+    workflows: [Test]
+    types: [completed]
     branches: [master]
-  workflow_dispatch: # "Run workflow" on the Actions tab, or `gh workflow run Release`
+  workflow_dispatch:
 
 permissions:
   contents: write # create the release and its tag
@@ -21,8 +24,14 @@ concurrency:
 
 jobs:
   release:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push')
     runs-on: ubuntu-latest
     container: archlinux:base-devel
+    env:
+      SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
     steps:
       - name: Install build dependencies
         run: |
@@ -30,18 +39,17 @@ jobs:
             glfw libglvnd libx11 libxext libxrandr systemd-libs
 
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.SHA }}
 
       - name: Version
         id: ver
         run: |
           base=$(sed -n 's/^pkgver=//p' packaging/arch/PKGBUILD)
-          ver="${base}.r${GITHUB_RUN_NUMBER}.g${GITHUB_SHA::7}"
+          ver="${base}.r${GITHUB_RUN_NUMBER}.g${SHA::7}"
           echo "ver=$ver" >> "$GITHUB_OUTPUT"
           echo "tag=v${base}.r${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
           sed -i "s/^pkgver=.*/pkgver=${ver}/; s/^pkgrel=.*/pkgrel=1/" packaging/arch/PKGBUILD
-
-      - name: Test
-        run: zig build test
 
       # makepkg refuses to run as root. -d: the runtime-only depends
       # (xdg-desktop-portal) aren't needed to build.
@@ -57,7 +65,7 @@ jobs:
         run: |
           gh release create "${{ steps.ver.outputs.tag }}" \
             --repo "$GITHUB_REPOSITORY" \
-            --target "$GITHUB_SHA" \
+            --target "$SHA" \
             --title "ZFD ${{ steps.ver.outputs.ver }}" \
             --generate-notes \
             packaging/arch/zfd-*.pkg.tar.zst
