@@ -1106,8 +1106,21 @@ pub const Browser = struct {
         } else if (self.canBrowseArchive(entry.name)) {
             self.browseArchive(child);
         } else {
-            fsops.openWith(self.io, self.alloc, child);
+            self.openFile(child);
         }
+    }
+
+    /// openFile opens the file at `path` in its app, or, a shortcut (a link file, as
+    /// Create Link makes where there are no symlinks), what it points to.
+    fn openFile(self: *Browser, path: []const u8) void {
+        if (fsops.linkFileTarget(self.io, self.alloc, path)) |target| {
+            defer self.alloc.free(target);
+            if (fsops.isDir(self.io, target)) {
+                self.navigate(target) catch {};
+            } else fsops.openWith(self.io, self.alloc, target);
+            return;
+        }
+        fsops.openWith(self.io, self.alloc, path);
     }
 
     /// canBrowseArchive reports whether opening `name` browses into it like a folder
@@ -1223,7 +1236,7 @@ pub const Browser = struct {
         } else if (self.insideArchive() != null) {
             self.openOutOfArchive(child);
         } else {
-            fsops.openWith(self.io, self.alloc, child);
+            self.openFile(child);
         }
     }
 

@@ -251,18 +251,64 @@ pub fn chmodPath(path: []const u8, mode: u32) !void {
     }
 }
 
-/// makeLinkIn creates a symlink in `dir` pointing at `target` (absolute), named
-/// "<name> (link)" (made unique if taken) and returns the name used (owned).
+/// shortcutName is a link's name as Windows Explorer names a shortcut, the
+/// extension kept last so it still opens as its kind: "doc.txt" → "doc - Shortcut.txt",
+/// a folder "Photos" → "Photos - Shortcut".
+pub fn shortcutName(alloc: std.mem.Allocator, base: []const u8, is_dir: bool) ![]u8 {
+    const dot = if (is_dir) null else std.mem.lastIndexOfScalar(u8, base, '.');
+    if (dot) |d| if (d > 0) return alloc.print("{s} - Shortcut{s}", .{ base[0..d], base[d..] });
+    return alloc.print("{s} - Shortcut", .{base});
+}
+
+/// makeLinkIn makes a shortcut to `target` (absolute) in `dir`, named as Windows
+/// Explorer would (shortcutName; made unique if taken), and returns the name used
+/// (owned). A symlink; where the filesystem has none (an SMB share, FAT), a
+/// freedesktop link file, "<name> - Shortcut.desktop", which file managers (ZFD,
+/// Dolphin) open as the item it points to.
 pub fn makeLinkIn(io: std.Io, alloc: std.mem.Allocator, dir: []const u8, target: []const u8) ![]u8 {
     const base = std.fs.path.basename(target);
-    const want = try alloc.print("{s} (link)", .{base});
+    const is_dir = isDir(io, target);
+    const want = try shortcutName(alloc, base, is_dir);
     defer alloc.free(want);
     const name = try uniqueNameInDir(io, alloc, dir, want);
     errdefer alloc.free(name);
     const link = try std.fs.path.join(alloc, &.{ dir, name });
     defer alloc.free(link);
-    try Dir.cwd().symLink(io, target, link, .{ .is_directory = isDir(io, target) });
-    return name;
+    if (Dir.cwd().symLink(io, target, link, .{ .is_directory = is_dir })) |_| return name else |_| {}
+    // No symlinks here: a link file instead.
+    alloc.free(name);
+    const dwant = try alloc.print("{s} - Shortcut.desktop", .{base});
+    defer alloc.free(dwant);
+    const dname = try uniqueNameInDir(io, alloc, dir, dwant);
+    errdefer alloc.free(dname);
+    const url = try percentEncodePath(alloc, target);
+    defer alloc.free(url);
+    const body = try alloc.print("[Desktop Entry]\nType=Link\nName={s} - Shortcut\nURL=file://{s}\nIcon={s}\n", .{ base, url, if (is_dir) "folder" else "text-x-generic" });
+    defer alloc.free(body);
+    const dpath = try std.fs.path.join(alloc, &.{ dir, dname });
+    defer alloc.free(dpath);
+    try Dir.cwd().writeFile(io, .{ .sub_path = dpath, .data = body, .flags = .{ .exclusive = true } });
+    return dname;
+}
+
+/// linkFileTarget returns where a freedesktop link file (a shortcut: Type=Link,
+/// URL=file://…) at `path` points (owned), or null if it isn't one. Reads the file
+/// (a few hundred bytes).
+pub fn linkFileTarget(io: std.Io, alloc: std.mem.Allocator, path: []const u8) ?[]u8 {
+    if (!std.mem.endsWith(u8, path, ".desktop")) return null;
+    const data = Dir.cwd().readFileAlloc(io, path, alloc, .limited(16 * 1024)) catch return null;
+    defer alloc.free(data);
+    var is_link = false;
+    var url: ?[]const u8 = null;
+    var it = std.mem.splitScalar(u8, data, '\n');
+    while (it.next()) |raw| {
+        const line = std.mem.trim(u8, raw, " \r\t");
+        if (std.mem.eql(u8, line, "Type=Link")) is_link = true;
+        if (std.mem.startsWith(u8, line, "URL=")) url = line[4..];
+    }
+    const u = url orelse return null;
+    if (!is_link or !std.mem.startsWith(u8, u, "file://")) return null;
+    return percentDecode(alloc, u["file://".len..]) catch null;
 }
 
 /// restoreTo moves `from` back to the exact path `to`: the undo of a move, which must
@@ -1172,11 +1218,43 @@ test "makeLinkIn makes a uniquely named symlink to the target" {
     defer a.free(n1);
     const n2 = try makeLinkIn(io, a, root, target);
     defer a.free(n2);
-    try testing.expectEqualStrings("doc.txt (link)", n1);
+    try testing.expectEqualStrings("doc - Shortcut.txt", n1);
     try testing.expect(!std.mem.eql(u8, n1, n2)); // the second didn't clobber the first
-    const back = try tmp.dir.readFileAlloc(io, "doc.txt (link)", a, .limited(16));
+    const back = try tmp.dir.readFileAlloc(io, "doc - Shortcut.txt", a, .limited(16));
     defer a.free(back);
     try testing.expectEqualStrings("hi", back); // it resolves to the target
+}
+
+test "shortcuts are named as Windows Explorer names them, extension last" {
+    const a = testing.allocator;
+    const f = try shortcutName(a, "doc.txt", false);
+    defer a.free(f);
+    try testing.expectEqualStrings("doc - Shortcut.txt", f);
+    const d = try shortcutName(a, "My.Photos", true);
+    defer a.free(d);
+    try testing.expectEqualStrings("My.Photos - Shortcut", d);
+    const h = try shortcutName(a, ".bashrc", false);
+    defer a.free(h);
+    try testing.expectEqualStrings(".bashrc - Shortcut", h);
+}
+
+test "a link file points where it says" {
+    const a = testing.allocator;
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "x - Shortcut.desktop", .data = "[Desktop Entry]\nType=Link\nName=x\nURL=file:///home/me/My%20Docs/x.txt\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "app.desktop", .data = "[Desktop Entry]\nType=Application\nExec=foo\n" });
+    const root = try tmp.dir.realPathFileAlloc(io, ".", a);
+    defer a.free(root);
+    const p1 = try std.fs.path.join(a, &.{ root, "x - Shortcut.desktop" });
+    defer a.free(p1);
+    const t = linkFileTarget(io, a, p1).?;
+    defer a.free(t);
+    try testing.expectEqualStrings("/home/me/My Docs/x.txt", t);
+    const p2 = try std.fs.path.join(a, &.{ root, "app.desktop" });
+    defer a.free(p2);
+    try testing.expect(linkFileTarget(io, a, p2) == null); // an app, not a link
 }
 
 test "measureTree counts files and bytes recursively" {
