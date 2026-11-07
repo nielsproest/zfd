@@ -7,6 +7,9 @@
 # 0.0.1.r7.g1a2b3c4, so every release sorts newer than the one before it (and
 # newer than local 0.0.1-<pkgrel> builds) and `pacman -U` sees it as an upgrade.
 name: Release
+# A run started by Test's result isn't attached to the commit's checks, so name it
+# after the commit it releases.
+run-name: "Release: ${{ github.event.workflow_run.display_title || 'current master' }}"
 
 on:
   workflow_run:
