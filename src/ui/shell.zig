@@ -2126,7 +2126,7 @@ pub const Shell = struct {
             // own thread; it shows once it's in.
             var ib: [std.fs.max_path_bytes]u8 = undefined;
             const ip = std.mem.print(&ib, "{s}/{s}", .{ if (std.mem.eql(u8, b.dir, "/")) "" else b.dir, self.info_name }) catch "";
-            self.preview.update(self.io, self.alloc, if (ip.len > 0) ip else null);
+            self.preview.update(self.io, self.alloc, if (ip.len > 0) ip else null, 0);
             self.actions.more_info = self.preview.moreInfo(ip) orelse "";
             if (self.actions.drawInfo(b)) self.closeWindow();
         }
@@ -2159,7 +2159,9 @@ pub const Shell = struct {
         }
         if (!self.show_preview and !self.ql_open) return;
         var buf: [std.fs.max_path_bytes]u8 = undefined;
-        self.preview.update(self.io, self.alloc, cursorPath(self.activeBrowser(), &buf));
+        const b = self.activeBrowser();
+        const stamp = if (b.count() > 0 and b.sel.cursor < b.count()) quicklook.stampOf(b.at(b.sel.cursor)) else 0;
+        self.preview.update(self.io, self.alloc, cursorPath(b, &buf), stamp);
     }
 
     /// qlFitSize is the size Quick Look takes for what it shows, as macOS sizes it: an
@@ -2281,7 +2283,16 @@ pub const Shell = struct {
         c.igPushID_Str("##qlclose");
         if (winButton(.close, wb_h, "Close (Space)", bar_bg)) self.ql_open = false;
         c.igPopID();
-        const right = wp.x + ws.x - pad - wb_w * 2;
+        var right = wp.x + ws.x - pad - wb_w * 2;
+        // Rotate, for a picture (as macOS's Quick Look has them), left of those.
+        if (has and self.canRotate(b)) if (self.ffmpeg_path) |ff| {
+            const tbw = @round(toolbarH() * 1.2);
+            right -= tbw * 2 + fs * 0.4;
+            c.igSetCursorScreenPos(cimgui.vec2(right, wp.y + pad));
+            if (toolButton("##qlrotl", .rotate_left, true, false, "Rotate Left")) self.runImageAction(b, ff, .{ .rotate = false });
+            c.igSameLine(0, 0);
+            if (toolButton("##qlrotr", .rotate_right, true, false, "Rotate Right")) self.runImageAction(b, ff, .{ .rotate = true });
+        };
         var left_end = wp.x + pad;
         var ob: [160]u8 = undefined;
         if (has and !b.at(b.sel.cursor).isDir()) {
@@ -2308,6 +2319,29 @@ pub const Shell = struct {
         c.igSetCursorScreenPos(cimgui.vec2(wp.x + pad, wp.y + bar_h + pad));
         const body = cimgui.vec2(ws.x - pad * 2, @max(ws.y - bar_h - pad * 2, 1));
         if (self.preview.drawPreview(body, &self.ql_zoom)) |enter| enterFromPreview(b, enter);
+    }
+
+    /// canRotate reports whether the item at the cursor is a picture its Quick Actions
+    /// apply to (rotated in place with ffmpeg: not inside an archive or Recent).
+    fn canRotate(self: *Shell, b: *Browser) bool {
+        if (self.ffmpeg_path == null or b.virtualView() or b.count() == 0 or b.sel.cursor >= b.count()) return false;
+        const e = b.at(b.sel.cursor);
+        return !e.isDir() and core.imagetool.isImage(e.name);
+    }
+
+    /// runImageAction rotates (or converts) the picture at the cursor, in place,
+    /// with ffmpeg on its own thread; the folder's watch then reloads it, and the
+    /// preview follows (it watches the item's time and size).
+    fn runImageAction(self: *Shell, b: *Browser, ff: []const u8, a: core.imagetool.Action) void {
+        var cpb: [std.fs.max_path_bytes]u8 = undefined;
+        if (cursorPath(b, &cpb)) |p| core.imagetool.run(self.io, self.alloc, ff, a, &.{p});
+    }
+
+    /// openQuickLook shows Quick Look on the cursor's item.
+    fn openQuickLook(self: *Shell) void {
+        if (self.ql_open) return;
+        self.ql_open = true;
+        self.ql_opened_at = c.igGetTime();
     }
 
     /// OpsSummary is what the toolbar's operations button shows: how many operations
@@ -2609,6 +2643,7 @@ pub const Shell = struct {
         const ql = &self.preview;
         if (ql.tex != 0) ph = @min(ph, @min(avail.x / ql.tex_w, 1.0) * ql.tex_h);
         if (ql.drawPreview(cimgui.vec2(avail.x, ph), null)) |enter| enterFromPreview(b, enter); // (fitted: zoom is Quick Look's)
+        if (ql.takeOpenRequest()) self.openQuickLook(); // a double-click on the picture
         if (!has) return;
         const e = b.at(b.sel.cursor);
         c.igSpacing();
@@ -2643,10 +2678,7 @@ pub const Shell = struct {
             if (c.igButton("Rotate Left", cimgui.vec2(0, 0))) act = .{ .rotate = false };
             c.igSameLine(0, -1);
             if (c.igButton("Rotate Right", cimgui.vec2(0, 0))) act = .{ .rotate = true };
-            if (act) |a| {
-                var cpb: [std.fs.max_path_bytes]u8 = undefined;
-                if (cursorPath(b, &cpb)) |p| core.imagetool.run(self.io, self.alloc, ff, a, &.{p});
-            }
+            if (act) |a| self.runImageAction(b, ff, a);
         };
     }
 
@@ -5942,7 +5974,7 @@ fn formHint(x: f32, text: []const u8, w: f32, col: c.ImVec4_c) void {
 }
 
 /// ToolIcon is a toolbar button's glyph.
-const ToolIcon = enum { back, forward, view_list, view_grid, view_columns, view_gallery, more, sort, share, tag, search, new_folder, trash, info, eye, terminal, preview_pane };
+const ToolIcon = enum { back, forward, view_list, view_grid, view_columns, view_gallery, more, sort, share, tag, search, new_folder, trash, info, eye, terminal, preview_pane, rotate_left, rotate_right };
 
 /// ToolItem is one of the toolbar's right-hand items (View > Customize Toolbar).
 pub const ToolItem = enum {
@@ -6150,6 +6182,31 @@ fn toolButtonW(id: [:0]const u8, icon: ToolIcon, w: f32, enabled: bool, on: bool
             c.ImDrawList_AddLine(dl, v(x + g * 0.2, y + g * 0.32), v(x + g * 0.4, y + g * 0.5), col, t);
             c.ImDrawList_AddLine(dl, v(x + g * 0.4, y + g * 0.5), v(x + g * 0.2, y + g * 0.68), col, t);
             c.ImDrawList_AddLine(dl, v(x + g * 0.5, y + g * 0.7), v(x + g * 0.78, y + g * 0.7), col, t);
+        },
+        .rotate_left, .rotate_right => {
+            // A circular arrow, three quarters round, its head at the end it turns to.
+            const cw = icon == .rotate_right;
+            const cx = x + g * 0.5;
+            const cy = y + g * 0.55;
+            const r = g * 0.36;
+            const pi = std.math.pi;
+            // Screen angles turn clockwise. Right: from the left, over the top, round
+            // to below the right; left: the mirror image.
+            const a0: f32 = if (cw) pi else 0;
+            const a1: f32 = if (cw) pi * 2.3 else -pi * 1.3;
+            c.ImDrawList_PathArcTo(dl, v(cx, cy), r, a0, a1, 20);
+            c.ImDrawList_PathStroke(dl, col, t, 0); // thickness, flags
+            // The head: a filled wedge along the arc's direction at its end.
+            const ex = cx + r * @cos(a1);
+            const ey = cy + r * @sin(a1);
+            const dir: f32 = if (cw) 1 else -1; // which way round it goes
+            const tx = -@sin(a1) * dir; // tangent, in the direction of travel
+            const ty = @cos(a1) * dir;
+            const hs = g * 0.36;
+            const head = v(ex + tx * hs * 0.9, ey + ty * hs * 0.9);
+            const b1 = v(ex - ty * hs * 0.55, ey + tx * hs * 0.55);
+            const b2 = v(ex + ty * hs * 0.55, ey - tx * hs * 0.55);
+            c.ImDrawList_AddTriangleFilled(dl, head, b1, b2, col);
         },
         .preview_pane => {
             // A window with its right-hand pane.

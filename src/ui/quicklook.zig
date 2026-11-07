@@ -368,6 +368,11 @@ pub const Zoom = struct {
     tex: c_uint = 0, // the picture this is for
 };
 
+/// stampOf is what update watches an entry by: its modification time and size.
+pub fn stampOf(e: core.scan.Entry) u64 {
+    return @as(u64, @bitCast(e.mtime_secs)) *% 1_000_003 +% e.size;
+}
+
 pub const View = struct {
     loader: ?*Loader = null,
     path: std.ArrayList(u8) = .empty, // what the window shows (or is loading)
@@ -380,6 +385,8 @@ pub const View = struct {
     img_w: c_int = 0,
     img_h: c_int = 0,
     info: ?[]u8 = null, // More Info, "Label\tValue" lines (owned)
+    stamp: u64 = 0, // the shown item's modification time and size: a change reloads it
+    open_request: bool = false, // a double-click on a fitted picture: show it in Quick Look
     dims_buf: [64]u8 = undefined, // More Info when there's only the header's size
     text: ?[]u8 = null, // text or message being shown (owned)
     is_message: bool = false,
@@ -402,6 +409,14 @@ pub const View = struct {
         self.text = null;
     }
 
+    /// takeOpenRequest reports, once, a double-click on the picture shown fitted (the
+    /// Preview pane's, the gallery's): show it in Quick Look.
+    pub fn takeOpenRequest(self: *View) bool {
+        const r = self.open_request;
+        self.open_request = false;
+        return r;
+    }
+
     /// moreInfo is the technical details of what `path` shows, once loaded:
     /// "Label\tValue" lines (borrowed until the next update), or null for none.
     /// Without ffprobe, a picture's dimensions from its header.
@@ -421,10 +436,13 @@ pub const View = struct {
     }
 
     /// update points the preview at `path` (the cursor's item; null = nothing) and
-    /// picks up a finished load. Call every frame while open.
-    pub fn update(self: *View, io: std.Io, alloc: std.mem.Allocator, path: ?[]const u8) void {
+    /// picks up a finished load. Call every frame while open. `stamp` (stampOf) is
+    /// the item's modification time and size: when it changes, the item is read
+    /// again (a picture rotated in place, a file rewritten).
+    pub fn update(self: *View, io: std.Io, alloc: std.mem.Allocator, path: ?[]const u8, stamp: u64) void {
         const p = path orelse "";
-        if (!std.mem.eql(u8, p, self.path.items)) {
+        if (!std.mem.eql(u8, p, self.path.items) or stamp != self.stamp) {
+            self.stamp = stamp;
             self.path.clearRetainingCapacity();
             self.path.appendSlice(alloc, p) catch {};
             if (p.len > 0) {
@@ -513,6 +531,7 @@ pub const View = struct {
         _ = c.igInvisibleButton("##qlimage", avail, 0); // (the area: hover and drag)
         // Fitted, it's never upscaled past 1:1; zoomed, it grows from there.
         const fit = @min(@min(avail.x / self.tex_w, avail.y / self.tex_h), 1.0);
+        if (zoom == null and c.igIsItemHovered(0) and c.igIsMouseDoubleClicked_Nil(0)) self.open_request = true;
         if (zoom != null and c.igIsItemHovered(0)) {
             const ctrl = c.igIsKeyDown_Nil(c.ImGuiMod_Ctrl);
             // Scrolling zooms (a picture has nothing to scroll; Ctrl too, as in the

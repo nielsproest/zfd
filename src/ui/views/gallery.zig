@@ -5,6 +5,7 @@
 //! other views (they share the table's helpers); Left/Right step along the strip.
 
 const std = @import("std");
+const quicklook = @import("../quicklook.zig");
 const cimgui = @import("../cimgui.zig");
 const c = cimgui.c;
 const theme = @import("../theme.zig");
@@ -55,7 +56,8 @@ pub const GalleryView = struct {
             table.joinPath(&buf, b.dir, b.at(b.sel.cursor).name)
         else
             null;
-        ql.update(b.io, b.alloc, path);
+        ql.update(b.io, b.alloc, path, if (path != null) quicklook.stampOf(b.at(b.sel.cursor)) else 0);
+        if (ql.takeOpenRequest() and !act.quicklook_toggle) act.quicklook_toggle = true; // (a double-click, last frame)
         if (ql.drawPreview(size, null)) |enter| {
             var nb: [256]u8 = undefined;
             const sel = if (enter.select) |n| (std.mem.print(&nb, "{s}", .{n}) catch null) else null;
