@@ -3,9 +3,10 @@
 # tested. A commit with [skip ci] in its message is neither tested nor released.
 # "Run workflow" on the Actions tab releases the current master by hand.
 #
-# Versions: each build is pkgver <PKGBUILD pkgver>.r<run number>.g<commit>, e.g.
-# 0.0.1.r7.g1a2b3c4, so every release sorts newer than the one before it (and
-# newer than local 0.0.1-<pkgrel> builds) and `pacman -U` sees it as an upgrade.
+# Versions follow packaging/arch/PKGBUILD as it is: pkgver=0.0.1 and pkgrel=155
+# release as v0.0.1-155 with zfd-0.0.1-155-x86_64.pkg.tar.zst. A release goes out
+# when pkgver or pkgrel changes; while that version is already released, a push
+# is tested and nothing more.
 name: Release
 # A run started by Test's result isn't attached to the commit's checks, so name it
 # after the commit it releases.
@@ -47,22 +48,32 @@ jobs:
 
       - name: Version
         id: ver
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          base=$(sed -n 's/^pkgver=//p' packaging/arch/PKGBUILD)
-          ver="${base}.r${GITHUB_RUN_NUMBER}.g${SHA::7}"
+          pkgver=$(sed -n 's/^pkgver=//p' packaging/arch/PKGBUILD)
+          pkgrel=$(sed -n 's/^pkgrel=//p' packaging/arch/PKGBUILD)
+          ver="${pkgver}-${pkgrel}"
           echo "ver=$ver" >> "$GITHUB_OUTPUT"
-          echo "tag=v${base}.r${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
-          sed -i "s/^pkgver=.*/pkgver=${ver}/; s/^pkgrel=.*/pkgrel=1/" packaging/arch/PKGBUILD
+          echo "tag=v$ver" >> "$GITHUB_OUTPUT"
+          if gh release view "v$ver" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "new=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::v$ver is already released; bump pkgrel (or pkgver) in packaging/arch/PKGBUILD for a new one."
+          else
+            echo "new=true" >> "$GITHUB_OUTPUT"
+          fi
 
       # makepkg refuses to run as root. -d: the runtime-only depends
       # (xdg-desktop-portal) aren't needed to build.
       - name: Build package
+        if: steps.ver.outputs.new == 'true'
         run: |
           useradd -m builder
           chown -R builder: .
           su builder -c 'cd packaging/arch && makepkg -f -d'
 
       - name: Publish release
+        if: steps.ver.outputs.new == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
