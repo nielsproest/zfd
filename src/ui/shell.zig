@@ -2610,7 +2610,10 @@ pub const Shell = struct {
         c.ImDrawList_AddRectFilled(c.igGetWindowDrawList(), sp, cimgui.vec2(sp.x + w, sp.y + c.igGetContentRegionAvail().y), c.igGetColorU32_Vec4(theme.p().sidebar_bg), self.cornerRadius(), c.ImDrawFlags_RoundCornersLeft);
         _ = c.igBeginChild_Str("##sidebar", cimgui.vec2(w, 0), 0, c.ImGuiWindowFlags_NoScrollbar | c.ImGuiWindowFlags_NoScrollWithMouse);
         _ = c.igBeginChild_Str("##places", cimgui.vec2(@max(self.sidebar_w, w), 0), c.ImGuiChildFlags_AlwaysUseWindowPadding, 0);
+        side_net_page = self.net_page;
+        side_left = false;
         self.drawSidebar(b);
+        if (side_left and self.net_page) self.closeNetworkPage(); // gone somewhere else in the sidebar
         c.igEndChild();
         c.igEndChild();
         c.igSameLine(0, 0);
@@ -5784,7 +5787,18 @@ fn wrapDim(s: []const u8) void {
     c.igPopTextWrapPos();
 }
 
-fn sideItem(label: [:0]const u8, here: bool, icon: SideIcon, dimmed: bool) bool {
+/// side_net_page: the Network page is open while the sidebar is drawn; side_left: a
+/// sidebar place other than Network was clicked this frame (the shell then closes
+/// the page). The page stood in for the folder without changing it, so the folder's
+/// own item stayed lit beside Network, and clicking it (going where you already
+/// were) didn't close the page.
+var side_net_page = false;
+var side_left = false;
+
+fn sideItem(label: [:0]const u8, here_in: bool, icon: SideIcon, dimmed: bool) bool {
+    const is_network = std.mem.eql(u8, label, "Network");
+    // While the Network page shows, it's the only place lit.
+    const here = if (side_net_page) here_in and is_network else here_in;
     const fs = c.igGetFontSize();
     const pos = c.igGetCursorScreenPos();
     const row_h = sideRowH();
@@ -5796,6 +5810,7 @@ fn sideItem(label: [:0]const u8, here: bool, icon: SideIcon, dimmed: bool) bool 
     c.igPushStyleVar_Vec2(c.ImGuiStyleVar_SelectableTextAlign, cimgui.vec2(0, 0.5));
     c.igPushStyleVar_Vec2(c.ImGuiStyleVar_ItemSpacing, cimgui.vec2(c.igGetStyle().*.ItemSpacing.x, 0));
     const clicked = c.igSelectable_Bool(label.ptr, here, 0, cimgui.vec2(0, row_h));
+    if (clicked and !is_network) side_left = true;
     c.igPopStyleVar(2);
     if (here) c.igPopStyleColor(1);
     if (dimmed) c.igPopStyleColor(1);
