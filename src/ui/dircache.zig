@@ -180,7 +180,7 @@ pub const DirCache = struct {
             if (self.shutdown) break;
             const path = self.queue.pop().?; // newest first
             self.mutex.unlock(self.io);
-            const result = scan.readDir(self.io, self.alloc, path);
+            const result = core.arcfs.readAny(self.io, self.alloc, path, null, true); // (inside an archive too)
             self.mutex.lockUncancelable(self.io);
             self.done.append(self.alloc, .{ .path = path, .result = result }) catch {
                 self.alloc.free(path);

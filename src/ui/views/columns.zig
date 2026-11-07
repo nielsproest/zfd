@@ -77,7 +77,7 @@ pub const ColumnsView = struct {
         // Path columns: ancestors (outermost first), then the current folder.
         var anc: [ancestors_shown][]const u8 = undefined;
         var n_anc: usize = 0;
-        if (!b.virtualView()) {
+        if (!b.in_recent) { // (Recent has no parents; an archive's folders do)
             var p: []const u8 = dir;
             while (n_anc < ancestors_shown) {
                 const parent = std.fs.path.dirname(p) orelse break;
@@ -291,7 +291,7 @@ fn handleNav(b: *Browser) void {
         const e = b.at(b.sel.cursor);
         if (e.isDir()) b.open(e) catch {};
     }
-    if (c.igIsKeyPressed_Bool(c.ImGuiKey_LeftArrow, false) and !b.virtualView()) {
+    if (c.igIsKeyPressed_Bool(c.ImGuiKey_LeftArrow, false) and !b.in_recent) {
         if (std.fs.path.dirname(b.dir)) |parent| {
             var nb: [std.fs.max_path_bytes]u8 = undefined;
             const name = std.fs.path.basename(b.dir);

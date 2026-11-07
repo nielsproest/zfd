@@ -184,6 +184,16 @@ pub const Cache = struct {
         }
     }
 
+    /// archived decodes the thumbnail of a picture inside an archive: read from it
+    /// into memory (nothing unpacked to disk), up to a size worth the wait.
+    fn archived(alloc: std.mem.Allocator, path: []const u8, w: *c_int, h: *c_int, fw: *c_int, fh: *c_int) ?[*]u8 {
+        const data = core.arcfs.read(alloc, path, 64 << 20) catch return null;
+        defer alloc.free(data);
+        const len: c_int = @intCast(data.len);
+        _ = image.zfd_image_size_mem(data.ptr, len, fw, fh);
+        return image.zfd_image_load_mem(data.ptr, len, thumb_px, w, h);
+    }
+
     fn run(self: *Cache) void {
         self.mutex.lockUncancelable(self.io);
         while (true) {
@@ -198,7 +208,8 @@ pub const Cache = struct {
             var zb: [std.fs.max_path_bytes + 1]u8 = undefined;
             var fw: c_int = 0;
             var fh: c_int = 0;
-            const px: ?[*]u8 = if (std.mem.printSentinel(&zb, "{s}", .{key[sep + 1 ..]}, 0)) |pz| blk: {
+            const path = key[sep + 1 ..];
+            const px: ?[*]u8 = if (core.arcfs.isArchived(path)) archived(self.alloc, path, &w, &h, &fw, &fh) else if (std.mem.printSentinel(&zb, "{s}", .{path}, 0)) |pz| blk: {
                 _ = image.zfd_image_size(pz.ptr, &fw, &fh); // (the thumbnail is shrunk)
                 if (core.exif.turned(image.orientationOf(self.io, pz))) std.mem.swap(c_int, &fw, &fh); // shown upright
                 break :blk image.load(self.io, pz.ptr, thumb_px, &w, &h);

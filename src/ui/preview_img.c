@@ -124,6 +124,13 @@ int zfd_image_size(const char *path, int *w, int *h) {
     return stbi_info(path, w, h, &comp);
 }
 
+// zfd_image_size_mem is zfd_image_size for an image already in memory (one inside
+// an archive, read in place).
+int zfd_image_size_mem(const unsigned char *buf, int len, int *w, int *h) {
+    int comp;
+    return stbi_info_from_memory(buf, len, w, h, &comp);
+}
+
 // Both stbi's buffers and ours come from malloc (stb's default allocator).
 void zfd_image_free(unsigned char *px) { free(px); }
 

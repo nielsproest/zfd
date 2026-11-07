@@ -1,85 +1,64 @@
-//! Browsing into archives: opening a zip/tar/7z extracts it (in the background, with
-//! the usual progress) into a private cache folder, and the browser simply shows that
-//! folder, so everything works inside it as in any folder: open, copy out, Quick
-//! Look, thumbnails, drag. The Registry remembers which archive each cache folder
-//! came from, so the UI can say where you are, Up at the top leaves to the archive's
-//! own folder, and an archive opened twice is extracted once.
+//! Temporary copies of files taken out of archives. Archives are browsed in place
+//! (arcfs.zig) and never unpacked to look inside, but a file you open in its app,
+//! drag into another app, or preview with an outside tool (a PDF, a video) has to
+//! be a real file: just that one is extracted, into a fresh folder here.
 //!
-//! Cache folders live under <cache>/zfd/archives/<pid>/<n>: per process, removed on
-//! exit, and folders of processes that no longer run are cleared at startup.
-//! Shared by every tab (owned by the shell). Render thread only. GUI-free.
+//! The folders live under <cache>/zfd/opened/<pid>/<n>: per process, removed on
+//! exit, and those of processes that no longer run are cleared at startup.
+//! Shared by every tab (owned by the shell). GUI-free.
 
 const std = @import("std");
 const Dir = std.Io.Dir;
+const arcfs = @import("arcfs.zig");
+const Progress = @import("progress.zig").Progress;
 
-pub const Opened = struct {
-    src: []u8, // the archive (absolute; owned)
-    root: []u8, // its cache folder (owned)
-};
-
-pub const Registry = struct {
+pub const TempFiles = struct {
     io: std.Io,
     alloc: std.mem.Allocator,
-    base: []u8, // <cache>/zfd/archives/<pid> (owned)
-    opened: std.ArrayList(Opened) = .empty,
-    next: u32 = 0,
+    base: []u8, // <cache>/zfd/opened/<pid> (owned)
+    next: std.atomic.Value(u32) = .init(0),
 
-    /// init prepares the registry under `cache_home` (e.g. ~/.cache) and clears the
-    /// cache folders left by ZFD processes that are gone.
-    pub fn init(io: std.Io, alloc: std.mem.Allocator, cache_home: []const u8) !Registry {
-        const parent = try std.fs.path.join(alloc, &.{ cache_home, "zfd", "archives" });
+    /// init prepares the folder under `cache_home` (e.g. ~/.cache) and clears what
+    /// ZFD processes that are gone left behind.
+    pub fn init(io: std.Io, alloc: std.mem.Allocator, cache_home: []const u8) !TempFiles {
+        const parent = try std.fs.path.join(alloc, &.{ cache_home, "zfd", "opened" });
         defer alloc.free(parent);
         clearStale(io, alloc, parent);
+        // Archives used to be unpacked whole under zfd/archives: clear those too.
+        const old = try std.fs.path.join(alloc, &.{ cache_home, "zfd", "archives" });
+        defer alloc.free(old);
+        clearStale(io, alloc, old);
         var pb: [16]u8 = undefined;
         const pid = std.mem.print(&pb, "{d}", .{std.os.linux.getpid()}) catch unreachable;
         return .{ .io = io, .alloc = alloc, .base = try std.fs.path.join(alloc, &.{ parent, pid }) };
     }
 
-    /// deinit removes every cache folder this process made.
-    pub fn deinit(self: *Registry) void {
-        if (self.opened.items.len > 0) Dir.cwd().deleteTree(self.io, self.base) catch {};
-        for (self.opened.items) |o| {
-            self.alloc.free(o.src);
-            self.alloc.free(o.root);
-        }
-        self.opened.deinit(self.alloc);
+    /// deinit removes every folder this process made.
+    pub fn deinit(self: *TempFiles) void {
+        if (self.next.load(.acquire) > 0) Dir.cwd().deleteTree(self.io, self.base) catch {};
         self.alloc.free(self.base);
     }
 
-    /// rootOf returns the cache folder already holding `src`, if it was opened before.
-    pub fn rootOf(self: *const Registry, src: []const u8) ?[]const u8 {
-        for (self.opened.items) |o| if (std.mem.eql(u8, o.src, src)) return o.root;
-        return null;
-    }
-
-    /// add reserves (and creates) a new cache folder for archive `src`; the caller
-    /// extracts into it. Returns the folder (owned by the registry).
-    pub fn add(self: *Registry, src: []const u8) ![]const u8 {
+    /// newDir makes a fresh, empty folder for one file (owned by the caller to free;
+    /// the folder itself goes at exit). Any thread.
+    pub fn newDir(self: *TempFiles, alloc: std.mem.Allocator) ![]u8 {
+        const n = self.next.fetchAdd(1, .acq_rel);
         var nb: [16]u8 = undefined;
-        const n = std.mem.print(&nb, "{d}", .{self.next}) catch unreachable;
-        self.next += 1;
-        const root = try std.fs.path.join(self.alloc, &.{ self.base, n });
-        errdefer self.alloc.free(root);
-        try Dir.cwd().createDirPath(self.io, root);
-        const s = try self.alloc.dupe(u8, src);
-        errdefer self.alloc.free(s);
-        try self.opened.append(self.alloc, .{ .src = s, .root = root });
-        return root;
+        const ns = std.mem.print(&nb, "{d}", .{n}) catch unreachable;
+        const dir = try std.fs.path.join(alloc, &.{ self.base, ns });
+        errdefer alloc.free(dir);
+        try Dir.cwd().createDirPath(self.io, dir);
+        return dir;
     }
 
-    /// containing returns the archive whose cache folder holds `path` (or is it).
-    pub fn containing(self: *const Registry, path: []const u8) ?Opened {
-        for (self.opened.items) |o| {
-            if (std.mem.eql(u8, path, o.root)) return o;
-            if (path.len > o.root.len and std.mem.startsWith(u8, path, o.root) and path[o.root.len] == '/') return o;
-        }
-        return null;
-    }
-
-    /// atRoot returns the archive whose cache folder is exactly `path`.
-    pub fn atRoot(self: *const Registry, path: []const u8) ?Opened {
-        for (self.opened.items) |o| if (std.mem.eql(u8, path, o.root)) return o;
-        return null;
+    /// takeOut extracts the one entry `path` points to inside an archive into a fresh
+    /// folder here, and returns where it landed (owned by the caller). Blocks while
+    /// it extracts: worker threads (or the drag loop, which holds the UI anyway).
+    pub fn takeOut(self: *TempFiles, alloc: std.mem.Allocator, path: []const u8, prog: ?*Progress) ![]u8 {
+        const dir = try self.newDir(alloc);
+        defer alloc.free(dir);
+        try arcfs.extract(&.{path}, dir, prog);
+        return std.fs.path.join(alloc, &.{ dir, std.fs.path.basename(path) });
     }
 };
 
@@ -102,7 +81,7 @@ fn clearStale(io: std.Io, alloc: std.mem.Allocator, parent: []const u8) void {
 // ---------------------------------------------------------------------------
 const testing = std.testing;
 
-test "registry maps cache folders back to their archive" {
+test "temporary folders are fresh, and gone with the process's own" {
     const a = testing.allocator;
     const io = testing.io;
     var tmp = testing.tmpDir(.{ .iterate = true });
@@ -110,20 +89,13 @@ test "registry maps cache folders back to their archive" {
     const cache = try tmp.dir.realPathFileAlloc(io, ".", a);
     defer a.free(cache);
 
-    var reg = try Registry.init(io, a, cache);
-    defer reg.deinit();
-    try testing.expect(reg.rootOf("/x/photos.zip") == null);
-    const root = try reg.add("/x/photos.zip");
-    try testing.expectEqualStrings(root, reg.rootOf("/x/photos.zip").?);
-    try testing.expect(Dir.cwd().statFile(io, root, .{}) != error.FileNotFound);
-
-    const inner = try std.fs.path.join(a, &.{ root, "2025", "beach.jpg" });
-    defer a.free(inner);
-    try testing.expectEqualStrings("/x/photos.zip", reg.containing(inner).?.src);
-    try testing.expect(reg.atRoot(inner) == null);
-    try testing.expectEqualStrings("/x/photos.zip", reg.atRoot(root).?.src);
-    // A sibling whose name merely starts with the root's isn't inside it.
-    const sibling = try a.print("{s}0", .{root});
-    defer a.free(sibling);
-    try testing.expect(reg.containing(sibling) == null);
+    var t = try TempFiles.init(io, a, cache);
+    const d1 = try t.newDir(a);
+    defer a.free(d1);
+    const d2 = try t.newDir(a);
+    defer a.free(d2);
+    try testing.expect(!std.mem.eql(u8, d1, d2));
+    _ = try Dir.cwd().statFile(io, d1, .{});
+    t.deinit();
+    try testing.expectError(error.FileNotFound, Dir.cwd().statFile(io, d1, .{}));
 }

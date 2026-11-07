@@ -14,6 +14,7 @@
 const std = @import("std");
 const fsops = @import("fsops.zig");
 const archive = @import("archive.zig");
+const arcfs = @import("arcfs.zig");
 const trash = @import("trash.zig");
 const tags = @import("tags.zig");
 const progress = @import("progress.zig");
@@ -509,10 +510,14 @@ pub const OpRunner = struct {
         var freed: u64 = 0;
         const dst_dev = fsops.deviceOf(b.dst_dir);
         for (b.srcs, 0..) |src, i| {
-            const m = fsops.measureTree(self.io, self.alloc, src);
+            const archived = arcfs.isArchived(src);
+            const m: fsops.Measure = if (archived) blk: {
+                const am = arcfs.measure(self.io, src);
+                break :blk .{ .files = am.files, .bytes = am.bytes };
+            } else fsops.measureTree(self.io, self.alloc, src);
             files += m.files;
             bytes += m.bytes;
-            if (!(move and fsops.deviceOf(src) == dst_dev)) need += m.bytes;
+            if (archived or !(move and fsops.deviceOf(src) == dst_dev)) need += m.bytes;
             // (a merge keeps what's there, so it frees nothing to count on)
             if (b.policyFor(i) == .replace or b.policyFor(i) == .replace_older) {
                 const existing = std.fs.path.join(self.alloc, &.{ b.dst_dir, std.fs.path.basename(src) }) catch continue;
@@ -546,6 +551,29 @@ pub const OpRunner = struct {
             try fsops.deletePath(io, dst);
         }
         if (move) try fsops.movePath(io, a, src, dst, prog) else try fsops.copyPath(io, a, src, dst, prog);
+    }
+
+    /// copyOutOf copies an entry out of an archive (arcfs) to `dst`: it's extracted
+    /// into a hidden folder beside it, then takes its name, so a canceled or failed
+    /// one leaves nothing half-made under that name. A "move" out of an archive is a
+    /// copy: archives are read-only.
+    fn copyOutOf(self: *OpRunner, prog: *Progress, src: []const u8, dst: []const u8, replace: bool, trash_home: []const u8) !void {
+        const io = self.io;
+        const a = self.alloc;
+        const dir = std.fs.path.dirname(dst) orelse return error.BadPathName;
+        const stage_name = try fsops.uniqueNameInDir(io, a, dir, ".zfd-unpacking");
+        defer a.free(stage_name);
+        const stage = try std.fs.path.join(a, &.{ dir, stage_name });
+        defer a.free(stage);
+        try fsops.makeDirIn(io, a, dir, stage_name);
+        defer std.Io.Dir.cwd().deleteTree(io, stage) catch {};
+        try arcfs.extract(&.{src}, stage, prog);
+        const landed = try std.fs.path.join(a, &.{ stage, std.fs.path.basename(src) });
+        defer a.free(landed);
+        if (replace) {
+            if (trash_home.len > 0) try fsops.trash(io, a, trash_home, dst) else try fsops.deletePath(io, dst);
+        }
+        try std.Io.Dir.renameAbsolute(landed, dst, io);
     }
 
     fn runBatch(self: *OpRunner, b: Batch, move: bool, prog: *Progress, pairs: *std.ArrayList(Pair)) ?[]const u8 {
@@ -589,7 +617,9 @@ pub const OpRunner = struct {
                 continue;
             };
             defer a.free(dst);
-            const res = if (takes_place)
+            const res = if (arcfs.isArchived(src))
+                self.copyOutOf(prog, src, dst, takes_place, b.trash_home)
+            else if (takes_place)
                 self.replaceInto(prog, src, dst, move, merging, b.trash_home)
             else if (move)
                 fsops.movePath(io, a, src, dst, prog)

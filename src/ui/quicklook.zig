@@ -20,6 +20,11 @@ extern fn zfd_texture_upload(px: [*]const u8, w: c_int, h: c_int) c_uint;
 extern fn zfd_texture_free(tex: c_uint) void;
 
 const max_dim = 2048; // longest side of a decoded preview
+
+/// temp_files is where an entry of an archive that an outside tool must read (a PDF,
+/// a video) is taken out to (set by the shell; null: no such previews).
+pub var temp_files: ?*core.archives.TempFiles = null;
+const image_max = 256 << 20; // biggest picture inside an archive read for a preview
 const text_limit = 64 * 1024; // bytes of a text file shown
 
 const Content = union(enum) {
@@ -118,6 +123,7 @@ pub const Loader = struct {
 
 /// load builds the preview for `path` (worker thread).
 fn load(io: std.Io, alloc: std.mem.Allocator, path: []const u8) Content {
+    if (core.arcfs.isArchived(path)) return loadArchived(io, alloc, path);
     const st = std.Io.Dir.cwd().statFile(io, path, .{}) catch return message(alloc, "Can't read this item", .{});
     if (st.kind == .directory) return folderSummary(io, alloc, path);
 
@@ -142,13 +148,55 @@ fn load(io: std.Io, alloc: std.mem.Allocator, path: []const u8) Content {
             if (renderVia(io, alloc, &.{ "ffmpeg", "-v", "error", "-i", path, "-frames:v", "1", "-vf", "scale='min(1600,iw)':-2", "-f", "image2pipe", "-vcodec", "png", "-" })) |im| return im;
         }
     }
-    if (core.archive.isArchive(path)) {
-        if (archiveListing(io, alloc, path)) |t| return .{ .text = t };
+    if (core.arcfs.opensAsFolder(std.fs.path.basename(path))) {
+        if (archivedFolder(io, alloc, path)) |f| return f; // (its contents, read in place)
     }
     if (textPreview(io, alloc, path)) |t| return .{ .text = t };
 
     var sb: [24]u8 = undefined;
     return message(alloc, "No preview available\n\n{s}", .{core.scan.humanizeSize(&sb, st.size)});
+}
+
+/// loadArchived previews an entry inside an archive, read in place: a folder lists
+/// its contents, a picture or text comes straight from the archive into memory, and
+/// a PDF or video (which only an outside tool reads) is taken out first, alone.
+fn loadArchived(io: std.Io, alloc: std.mem.Allocator, path: []const u8) Content {
+    const inf = core.arcfs.info(io, path) catch return message(alloc, "Can't read this item", .{});
+    if (inf.kind == .dir) return archivedFolder(io, alloc, path) orelse message(alloc, "Folder", .{});
+    const ext = extLower(path);
+    if (isAny(ext, &.{ "png", "jpg", "jpeg", "gif", "bmp", "tga", "psd", "pnm", "ppm", "pgm", "pic" })) {
+        if (core.arcfs.read(alloc, path, image_max)) |data| {
+            defer alloc.free(data);
+            var w: c_int = 0;
+            var h: c_int = 0;
+            if (zfd_image_load_mem(data.ptr, @intCast(data.len), max_dim, &w, &h)) |px| return .{ .image = .{ .px = px, .w = w, .h = h } };
+        } else |_| {}
+    }
+    const outside = std.mem.eql(u8, ext, "pdf") or
+        isAny(ext, &.{ "mp4", "mkv", "webm", "avi", "mov", "m4v", "wmv", "flv", "webp", "tiff", "tif", "heic", "avif" });
+    if (outside) if (temp_files) |tf| {
+        if (tf.takeOut(alloc, path, null)) |out| {
+            defer alloc.free(out);
+            return load(io, alloc, out);
+        } else |_| {}
+    };
+    if (core.arcfs.readStart(alloc, path, text_limit)) |t| {
+        if (t.len > 0 and std.mem.indexOfScalar(u8, t, 0) == null) return .{ .text = t };
+        alloc.free(t);
+    } else |_| {}
+    var sb: [24]u8 = undefined;
+    return message(alloc, "No preview available\n\n{s}", .{core.scan.humanizeSize(&sb, inf.size)});
+}
+
+/// archivedFolder previews a folder inside an archive (or an archive's top level):
+/// how many items, and the first names, folders first. Null if it can't be read.
+fn archivedFolder(io: std.Io, alloc: std.mem.Allocator, path: []const u8) ?Content {
+    const got = core.arcfs.names(io, alloc, path, 400) catch return null;
+    defer {
+        for (got.list) |n| alloc.free(n);
+        alloc.free(got.list);
+    }
+    return summary(alloc, got.list, got.total, false);
 }
 
 fn message(alloc: std.mem.Allocator, comptime fmt: []const u8, args: anytype) Content {
@@ -162,7 +210,6 @@ fn folderSummary(io: std.Io, alloc: std.mem.Allocator, path: []const u8) Content
     defer d.close(io);
     const limit = 100_000;
     const keep = 400; // names gathered to sort; the first `shown` are listed
-    const shown = 40;
     var names = std.ArrayList([]u8).empty;
     defer {
         for (names.items) |n| alloc.free(n);
@@ -177,6 +224,13 @@ fn folderSummary(io: std.Io, alloc: std.mem.Allocator, path: []const u8) Content
         const nm = alloc.print("{s}{s}", .{ e.name, if (e.kind == .directory) "/" else "" }) catch continue;
         names.append(alloc, nm) catch alloc.free(nm);
     }
+    return summary(alloc, names.items, n, n >= limit);
+}
+
+/// summary is a folder's preview text: how many items (`more`: at least that
+/// many), then the first names, folders (named with a '/') first, then A-Z.
+fn summary(alloc: std.mem.Allocator, names: [][]u8, n: usize, more: bool) Content {
+    const shown = 40;
     const Ctx = struct {
         fn less(_: void, a: []u8, b: []u8) bool {
             const ad = std.mem.endsWith(u8, a, "/");
@@ -185,15 +239,15 @@ fn folderSummary(io: std.Io, alloc: std.mem.Allocator, path: []const u8) Content
             return std.ascii.lessThanIgnoreCase(a, b);
         }
     };
-    std.mem.sort([]u8, names.items, {}, Ctx.less);
+    std.mem.sort([]u8, names, {}, Ctx.less);
     var out = std.ArrayList(u8).empty;
     errdefer out.deinit(alloc);
-    out.print(alloc, "{d}{s} item{s}", .{ n, if (n >= limit) "+" else "", if (n == 1) "" else "s" }) catch {};
-    for (names.items[0..@min(shown, names.items.len)]) |nm| {
+    out.print(alloc, "{d}{s} item{s}", .{ n, if (more) "+" else "", if (n == 1) "" else "s" }) catch {};
+    for (names[0..@min(shown, names.len)]) |nm| {
         out.append(alloc, '\n') catch break;
         out.appendSlice(alloc, nm) catch break;
     }
-    if (n > shown and names.items.len > 0) out.appendSlice(alloc, "\n\u{2026}") catch {};
+    if (n > shown and names.len > 0) out.appendSlice(alloc, "\n\u{2026}") catch {};
     return .{ .folder = out.toOwnedSlice(alloc) catch return message(alloc, "Folder", .{}) };
 }
 
@@ -214,31 +268,6 @@ fn textPreview(io: std.Io, alloc: std.mem.Allocator, path: []const u8) ?[]u8 {
         return null;
     }
     return alloc.realloc(buf, n) catch buf[0..n];
-}
-
-/// archiveListing previews an archive as its contents: how many entries, then the
-/// first few hundred paths (`bsdtar -tf`, which reads zip, tar.*, 7z, rar, iso, …).
-/// Null when bsdtar is missing or can't read it.
-fn archiveListing(io: std.Io, alloc: std.mem.Allocator, path: []const u8) ?[]u8 {
-    const out = runCapture(io, alloc, &.{ "bsdtar", "-tf", path }, 4 << 20) orelse return null;
-    defer alloc.free(out);
-    const shown_max = 400;
-    var lines: usize = 0;
-    var cut: usize = out.len;
-    var it = std.mem.splitScalar(u8, std.mem.trimEnd(u8, out, "\n"), '\n');
-    var pos: usize = 0;
-    while (it.next()) |line| {
-        lines += 1;
-        if (lines == shown_max) cut = pos + line.len;
-        pos += line.len + 1;
-    }
-    if (lines == 0) return null;
-    const more = if (lines > shown_max) lines - shown_max else 0;
-    return alloc.print("{d} item{s} inside{s}\n\n{s}{s}", .{
-        lines,                                        if (lines == 1) "" else "s",
-        if (out.len >= 4 << 20) " (or more)" else "", out[0..@min(cut, out.len)],
-        if (more > 0) "\n\u{2026}" else "",
-    }) catch null;
 }
 
 /// runCapture runs argv and returns its stdout (up to `max` bytes; owned), or null

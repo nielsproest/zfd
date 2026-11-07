@@ -33,6 +33,7 @@ const DeepSearch = @import("deepsearch.zig").DeepSearch;
 const recent = @import("recent.zig");
 const FolderPrefs = @import("folderprefs.zig").FolderPrefs;
 const archives_mod = @import("archives.zig");
+const arcfs = @import("arcfs.zig");
 const details_mod = @import("details.zig");
 
 /// UndoAction records the single most recent undoable operation (Ctrl+Z); undoing it
@@ -169,7 +170,13 @@ pub const Browser = struct {
     prefs: ?*FolderPrefs = null,
     view_mode: @import("folderprefs.zig").Mode = .list, // the layout: the window's, unless a folder insists
     carry_layout: bool = false, // the folder being opened is inside the one before: it keeps its layout
-    archives: ?*archives_mod.Registry = null, // opened archives, shared by all tabs (owned by the shell)
+    // Where a file taken out of an archive (to open it in its app) goes; null: archives
+    // aren't browsed (shared by all tabs, owned by the shell).
+    temp_files: ?*archives_mod.TempFiles = null,
+    // A file being taken out of an archive to open, once it's there (owned): opened
+    // (or, an archive itself, browsed) when it lands.
+    open_when_out: ?[]u8 = null,
+    open_out_with: ?[]u8 = null, // ...in this app (its Exec line; owned), else its default
     untrashable: ?[]OpRunner.Pair = null, // items Move to Trash couldn't move (owned), awaiting the user
     untrashable_why: []const u8 = "", // @errorName of why (static)
     tag_filter: tags.Mask = 0, // show only items with one of these colour tags (sidebar Tags; 0 = all)
@@ -186,8 +193,6 @@ pub const Browser = struct {
     usage_snapshot: ?usage.Snapshot = null, // latest streamed usage snapshot (owned)
     usage_dir: ?[]u8 = null, // dir the usage snapshot belongs to (owned)
     archive_tool: ?[]u8 = null, // absolute path to bsdtar (owned), null hides the archive menu
-    squash_tool: ?[]u8 = null, // unsquashfs, for an AppImage's or snap's contents (owned; found on first use)
-    squash_looked: bool = false,
     usage_canceled: bool = false, // treemap scan canceled for the current dir
 
     /// init opens `start_dir` and kicks off the first (async) load. `trash_home` is
@@ -301,7 +306,8 @@ pub const Browser = struct {
         self.clearUndo();
         self.clearRedo();
         if (self.archive_tool) |t| self.alloc.free(t);
-        if (self.squash_tool) |t| self.alloc.free(t);
+        if (self.open_when_out) |p| self.alloc.free(p);
+        if (self.open_out_with) |p| self.alloc.free(p);
         self.alloc.free(self.home);
         self.alloc.free(self.trash_home);
         self.alloc.free(self.dir);
@@ -895,6 +901,7 @@ pub const Browser = struct {
     /// requestRename asks the table to enter inline-rename on the cursor, used by the
     /// shared context menu so Rename works from any view (the table does the edit).
     pub fn requestRename(self: *Browser) void {
+        if (self.archived()) return;
         self.want_rename = true;
     }
 
@@ -951,7 +958,8 @@ pub const Browser = struct {
         // Its view (layout, sort, …) is applied when its listing goes on screen, so
         // the folder still showing never flashes in the next one's layout.
         self.view_pending = true;
-        self.watchDir(if (virtual) "" else dup); // Recent: nothing to watch; F5 reloads
+        // Recent and the inside of an archive: nothing to watch (F5 reloads).
+        self.watchDir(if (virtual or arcfs.split(dup) != null) "" else dup);
         try self.requestScan();
     }
 
@@ -970,10 +978,11 @@ pub const Browser = struct {
         return if (self.in_recent) recent.uri else self.dir;
     }
 
-    /// virtualView reports whether the listing isn't a real folder (Recent), so
-    /// creating or pasting items "here" makes no sense.
+    /// virtualView reports whether the listing isn't a real folder you can change:
+    /// Recent, or the inside of an archive (read in place, read-only). Creating,
+    /// pasting, renaming or trashing items "here" makes no sense.
     pub fn virtualView(self: *const Browser) bool {
-        return self.in_recent;
+        return self.in_recent or self.insideArchive() != null;
     }
 
     /// navigateOrClimb opens `path`, and if it isn't there any more (a favourite whose
@@ -1043,7 +1052,7 @@ pub const Browser = struct {
             return;
         }
         // Up from an archive's top level leaves it, back to the archive's own folder.
-        if (self.archives) |reg| if (reg.atRoot(self.dir) != null) {
+        if (self.insideArchive()) |o| if (o.inner.len == 0) {
             _ = self.leaveArchive();
             return;
         };
@@ -1092,6 +1101,8 @@ pub const Browser = struct {
             if (in_flight and self.hist_pos > 0 and std.mem.eql(u8, self.history.items[self.hist_pos - 1], base))
                 self.hist_pos -= 1; // navigate drops the unfinished one from the history
             try self.navigate(child);
+        } else if (self.insideArchive() != null) {
+            self.openOutOfArchive(child); // (an archive in it too: taken out, then browsed)
         } else if (self.canBrowseArchive(entry.name)) {
             self.browseArchive(child);
         } else {
@@ -1099,76 +1110,97 @@ pub const Browser = struct {
         }
     }
 
-    /// canBrowseArchive reports whether opening `name` browses into it (an archive,
-    /// with bsdtar available) rather than handing it to another app.
+    /// canBrowseArchive reports whether opening `name` browses into it like a folder
+    /// (an archive) rather than handing it to another app.
     pub fn canBrowseArchive(self: *const Browser, name: []const u8) bool {
-        return self.archives != null and self.archive_tool != null and archive.isArchive(name);
+        return self.temp_files != null and archive.isArchive(name);
     }
 
-    /// browseArchive shows the inside of archive `path`: its extracted copy, extracting
-    /// it in the background first if this is the first time (the folder fills in as
-    /// the extraction runs; the progress window shows for a big one).
+    /// browseArchive shows the inside of archive `path`, read in place (arcfs):
+    /// nothing is unpacked to look inside.
     pub fn browseArchive(self: *Browser, path: []const u8) void {
-        self.browseWith(path, self.archive_tool orelse return);
+        self.navigate(path) catch {};
     }
 
     /// canShowContents reports whether Show Contents can open `name`: a package or
-    /// document that's an archive inside, or an AppImage/snap (with unsquashfs).
+    /// document that's an archive inside (an .epub, a .docx, a .jar…).
     pub fn canShowContents(self: *Browser, name: []const u8) bool {
-        if (self.archives == null) return false;
-        if (archive.isPackage(name)) return self.archive_tool != null;
-        if (archive.isSquashImage(name)) return self.squashTool() != null;
-        return false;
+        return self.temp_files != null and archive.isPackage(name);
     }
 
-    /// showContents browses the inside of a package or an AppImage, as an archive.
+    /// showContents browses the inside of a package, as an archive.
     pub fn showContents(self: *Browser, path: []const u8) void {
-        const name = std.fs.path.basename(path);
-        const tool = if (archive.isSquashImage(name)) self.squashTool() else self.archive_tool;
-        self.browseWith(path, tool orelse return);
+        self.navigate(path) catch {};
     }
 
-    fn squashTool(self: *Browser) ?[]const u8 {
-        if (!self.squash_looked) {
-            self.squash_looked = true;
-            self.squash_tool = fsops.findOnPath(self.io, self.alloc, "unsquashfs");
-        }
-        return self.squash_tool;
+    /// openOutOfArchive opens the file `path` inside an archive in its app: just that
+    /// one is taken out, into a temporary folder (gone when ZFD exits), and opened
+    /// once it's there. An archive inside the archive is browsed instead.
+    pub fn openOutOfArchive(self: *Browser, path: []const u8) void {
+        self.openOutOfArchiveWith(path, null);
     }
 
-    fn browseWith(self: *Browser, path: []const u8, tool: []const u8) void {
-        const reg = self.archives orelse return;
-        if (reg.rootOf(path)) |root| {
-            self.navigate(root) catch {};
-            return;
-        }
-        const root = reg.add(path) catch |e| {
+    /// openOutOfArchiveWith is openOutOfArchive in app `exec` (an Exec line), or the
+    /// file's default app when null.
+    pub fn openOutOfArchiveWith(self: *Browser, path: []const u8, exec: ?[]const u8) void {
+        const tf = self.temp_files orelse return;
+        const dir = tf.newDir(self.alloc) catch |e| {
             self.op_err = @errorName(e);
             return;
         };
-        const t = self.alloc.dupe(u8, tool) catch return;
-        const list = self.alloc.alloc([]u8, 1) catch {
-            self.alloc.free(t);
+        defer self.alloc.free(dir);
+        const out = std.fs.path.join(self.alloc, &.{ dir, std.fs.path.basename(path) }) catch return;
+        const srcs = self.alloc.alloc([]u8, 1) catch {
+            self.alloc.free(out);
             return;
         };
-        list[0] = self.alloc.dupe(u8, path) catch {
-            self.alloc.free(t);
-            self.alloc.free(list);
+        srcs[0] = self.alloc.dupe(u8, path) catch {
+            self.alloc.free(srcs);
+            self.alloc.free(out);
             return;
         };
-        const dst = self.alloc.dupe(u8, root) catch {
-            self.alloc.free(t);
-            freePaths(self.alloc, list);
+        const dst = self.alloc.dupe(u8, dir) catch {
+            freePaths(self.alloc, srcs);
+            self.alloc.free(out);
             return;
         };
-        self.ops.submit(.{ .extract = .{ .tool = t, .archives = list, .dst_dir = dst, .own_folder = false } }) catch {};
-        self.navigate(root) catch {};
+        if (self.open_when_out) |old| self.alloc.free(old);
+        self.open_when_out = out;
+        if (self.open_out_with) |old| self.alloc.free(old);
+        self.open_out_with = if (exec) |x| (self.alloc.dupe(u8, x) catch null) else null;
+        self.ops.submit(.{ .copy = .{ .srcs = srcs, .dst_dir = dst, .undoable = false } }) catch {};
     }
 
-    /// insideArchive returns the archive the current folder belongs to, if any.
-    pub fn insideArchive(self: *const Browser) ?archives_mod.Opened {
-        const reg = self.archives orelse return null;
-        return reg.containing(self.dir);
+    /// takeOutOpened opens a file taken out of an archive once it has landed.
+    fn takeOutOpened(self: *Browser) void {
+        const path = self.open_when_out orelse return;
+        if (!fsops.pathExists(self.io, path)) return; // (another op finished first)
+        self.open_when_out = null;
+        defer self.alloc.free(path);
+        const app = self.open_out_with;
+        self.open_out_with = null;
+        defer if (app) |x| self.alloc.free(x);
+        if (app) |x|
+            desktop.launch(self.io, self.alloc, x, path)
+        else if (self.canBrowseArchive(std.fs.path.basename(path)))
+            self.browseArchive(path)
+        else
+            fsops.openWith(self.io, self.alloc, path);
+    }
+
+    /// archived reports whether the folder shown is inside an archive (read-only).
+    fn archived(self: *const Browser) bool {
+        return self.insideArchive() != null;
+    }
+
+    /// insideArchive returns the archive the current folder is in, and where in it
+    /// (it's read in place: arcfs), if any. Decided by the path while the folder
+    /// loads; once listed, a real folder that only looks like an archive isn't one.
+    pub fn insideArchive(self: *const Browser) ?arcfs.Split {
+        if (self.in_recent) return null;
+        const sp = arcfs.split(self.dir) orelse return null;
+        if (!self.loading) if (self.listing) |l| if (!l.in_archive) return null;
+        return sp;
     }
 
     /// leaveArchive goes to the folder holding the archive being browsed, with the
@@ -1188,6 +1220,8 @@ pub const Browser = struct {
         defer self.alloc.free(child);
         if (is_dir) {
             self.navigate(child) catch {};
+        } else if (self.insideArchive() != null) {
+            self.openOutOfArchive(child);
         } else {
             fsops.openWith(self.io, self.alloc, child);
         }
@@ -1195,11 +1229,13 @@ pub const Browser = struct {
 
     /// openTerminalHere launches a terminal in the current directory.
     pub fn openTerminalHere(self: *Browser) void {
+        if (self.archived()) return;
         fsops.openTerminal(self.io, self.alloc, self.dir);
     }
 
     /// openTerminalIn launches a terminal in `dir` (a folder row's own path).
     pub fn openTerminalIn(self: *Browser, dir: []const u8) void {
+        if (self.archived()) return;
         fsops.openTerminal(self.io, self.alloc, dir);
     }
 
@@ -1214,6 +1250,7 @@ pub const Browser = struct {
     /// share mustn't freeze the window). When it's made, its name is offered to edit
     /// (see onCreated).
     fn createEntry(self: *Browser, base: []const u8, is_dir: bool) void {
+        if (self.archived()) return;
         if (self.in_recent) return; // Recent isn't a folder you can create things in
         self.submitCreate(self.dir, base, is_dir, true, &.{});
     }
@@ -1270,6 +1307,7 @@ pub const Browser = struct {
 
     /// deleteSelection removes the selection: to the trash, or permanently.
     pub fn deleteSelection(self: *Browser, permanent: bool) void {
+        if (self.archived()) return;
         if (!permanent) {
             self.trashSelection();
             return;
@@ -1381,6 +1419,7 @@ pub const Browser = struct {
     /// toggleTag puts colour `bit` on every selected item, or takes it off if they all
     /// have it already (Finder's tag menu). Runs on the op runner; the reload shows it.
     pub fn toggleTag(self: *Browser, bit: tags.Mask) void {
+        if (self.archived()) return;
         const st = self.selectionTagged(bit);
         if (st.of == 0) return;
         const paths = self.selectedPaths() catch return;
@@ -1464,6 +1503,7 @@ pub const Browser = struct {
         const e = self.at(self.sel.cursor);
         const path = std.fs.path.join(self.alloc, &.{ self.dir, e.name }) catch return;
         defer self.alloc.free(path);
+        if (self.archived()) return self.openOutOfArchiveWith(path, apps[index].exec);
         desktop.launch(self.io, self.alloc, apps[index].exec, path);
     }
 
@@ -1795,6 +1835,7 @@ pub const Browser = struct {
         self.setClipboard(.copy);
     }
     pub fn cutSelection(self: *Browser) void {
+        if (self.archived()) return;
         self.setClipboard(.cut);
     }
 
@@ -1828,6 +1869,7 @@ pub const Browser = struct {
     /// `dst_dir` (borrowed; duped here for the off-thread job). A cut clears the
     /// clipboard once queued.
     pub fn pasteInto(self: *Browser, dst_dir: []const u8) void {
+        if (arcfs.split(dst_dir) != null) return; // into an archive: they're read-only
         if (self.clipboard.isEmpty()) return;
         self.op_err = null;
         const srcs = dupPaths(self.alloc, self.clipboard.list()) catch return;
@@ -1839,6 +1881,7 @@ pub const Browser = struct {
     /// renameMany renames items of the current folder in one job: olds[i] → news[i]
     /// (plain names). One Ctrl+Z puts every name back.
     pub fn renameMany(self: *Browser, olds: []const []const u8, news: []const []const u8) void {
+        if (self.archived()) return;
         var list = std.ArrayList(OpRunner.Pair).empty;
         for (olds, news) |o, n| {
             if (std.mem.eql(u8, o, n)) continue;
@@ -1868,6 +1911,7 @@ pub const Browser = struct {
     /// linkSelection makes a symlink to each selected item, here in the current folder
     /// ("name (link)"), then selects the new link (for one) so it can be renamed or cut.
     pub fn linkSelection(self: *Browser) void {
+        if (self.archived()) return;
         const paths = self.selectedPaths() catch return;
         self.op_err = null;
         const d = self.alloc.dupe(u8, self.dir) catch return freePaths(self.alloc, paths);
@@ -1885,6 +1929,7 @@ pub const Browser = struct {
     /// recording them for undo. Takes borrowed paths; the drag snapshot outlives the
     /// drop, so it can't hand ownership to the job.
     pub fn trashPaths(self: *Browser, paths: []const []const u8) void {
+        if (self.archived()) return;
         if (paths.len == 0) return;
         self.op_err = null;
         var owned = std.ArrayList([]u8).empty;
@@ -2147,6 +2192,10 @@ pub const Browser = struct {
     }
 
     pub fn dropDraggedInto(self: *Browser, srcs: []const []const u8, dst_dir: []const u8, copy: bool) void {
+        if (arcfs.split(dst_dir) != null) return; // into an archive: they're read-only
+        // Out of an archive it's always a copy: the archive can't give them up. (By
+        // name: no I/O on the render thread.)
+        const copy_out = copy or (srcs.len > 0 and arcfs.split(srcs[0]) != null);
         self.op_err = null;
 
         var list = std.ArrayList([]u8).empty;
@@ -2168,7 +2217,7 @@ pub const Browser = struct {
             return;
         }
         const owned = list.toOwnedSlice(self.alloc) catch return;
-        self.submitTransfer(owned, dst_dir, copy);
+        self.submitTransfer(owned, dst_dir, copy_out);
     }
 
     /// dropSelectionInto moves (or copies, when `copy`) the current selection into
@@ -2182,6 +2231,7 @@ pub const Browser = struct {
 
     /// renameCursor renames the keyboard-focused row to new_name, off-thread.
     pub fn renameCursor(self: *Browser, new_name: []const u8) void {
+        if (self.archived()) return;
         if (self.sel.cursor >= self.count() or new_name.len == 0) return;
         const old = self.at(self.sel.cursor).name;
         if (std.mem.eql(u8, new_name, old)) return; // unchanged → no-op (e.g. committing on click-away)
@@ -2577,6 +2627,7 @@ pub const Browser = struct {
             self.recordTransfer(c2);
             self.op_seq +%= 1;
             self.refresh();
+            self.takeOutOpened();
         }
         // Fold in the latest streamed recursive-usage snapshot (for the treemap).
         if (self.usage.poll()) |snap| {

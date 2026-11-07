@@ -152,6 +152,7 @@ pub const ViewActions = struct {
     /// rowMenu is the right-click context menu (operates on the current selection).
     pub fn rowMenu(self: *ViewActions, b: *Browser, i: usize) void {
         const e = b.at(i);
+        const ro = b.insideArchive() != null; // read in place: nothing here changes
         if (c.igMenuItem_Bool("Open", null, false, true)) b.open(e) catch {};
         if (!e.isDir() and c.igMenuItem_Bool("Open with\u{2026}", null, false, true)) self.openwith_pending = true;
         if (c.igMenuItem_Bool("Quick Look", "Space", false, true)) {
@@ -164,7 +165,7 @@ pub const ViewActions = struct {
                 b.requestNewTab(path)
             else |_| {}
         }
-        if (e.isDir()) {
+        if (e.isDir() and !ro) {
             if (c.igMenuItem_Bool("Open Terminal Here", null, false, true)) {
                 var pbuf: [4200]u8 = undefined;
                 const path = std.mem.print(&pbuf, "{s}/{s}", .{ b.dir, e.name }) catch b.dir;
@@ -172,12 +173,12 @@ pub const ViewActions = struct {
             }
         }
         c.igSeparator();
-        if (c.igMenuItem_Bool("Cut", "Ctrl+X", false, true)) b.cutSelection();
+        if (c.igMenuItem_Bool("Cut", "Ctrl+X", false, !ro)) b.cutSelection();
         if (c.igMenuItem_Bool("Copy", "Ctrl+C", false, true)) b.copySelection();
         // Paste into the right-clicked folder (like Explorer/Dolphin); into the current
         // directory for a file row or empty clipboard.
         const paste_label = if (e.isDir()) "Paste into folder" else "Paste";
-        if (c.igMenuItem_Bool(paste_label, "Ctrl+V", false, !b.clipboard.isEmpty())) b.pasteIntoDir(i);
+        if (c.igMenuItem_Bool(paste_label, "Ctrl+V", false, !b.clipboard.isEmpty() and !ro)) b.pasteIntoDir(i);
         if (!b.virtualView()) {
             if (c.igMenuItem_Bool("Duplicate", "Ctrl+Alt+D", false, true)) b.duplicateSelection();
             var nb: [64]u8 = undefined;
@@ -188,19 +189,21 @@ pub const ViewActions = struct {
         self.imageSection(b);
         self.archiveSection(b, e);
         c.igSeparator();
-        if (b.sel.count() > 1 and c.igMenuItem_Bool("Rename\u{2026}", "F2", false, true)) {
+        if (b.sel.count() > 1 and c.igMenuItem_Bool("Rename\u{2026}", "F2", false, !ro)) {
             self.openBatchRename(b);
-        } else if (b.sel.count() <= 1 and c.igMenuItem_Bool("Rename", "F2", false, true)) {
+        } else if (b.sel.count() <= 1 and c.igMenuItem_Bool("Rename", "F2", false, !ro)) {
             b.sel.click(i); // rename the clicked row; the table does the inline edit
             b.requestRename();
         }
-        if (c.igMenuItem_Bool("Move to Trash", "Del", false, true)) b.trashSelection();
-        if (c.igMenuItem_Bool("Delete permanently", "Shift+Del", false, true)) self.askDeleteConfirm(b);
+        if (c.igMenuItem_Bool("Move to Trash", "Del", false, !ro)) b.trashSelection();
+        if (c.igMenuItem_Bool("Delete permanently", "Shift+Del", false, !ro)) self.askDeleteConfirm(b);
         c.igSeparator();
-        tagRow(b);
-        c.igSeparator();
+        if (!ro) {
+            tagRow(b);
+            c.igSeparator();
+        }
         if (c.igMenuItem_Bool("Copy Path", null, false, true)) copyPathToClipboard(b, i);
-        if (c.igMenuItem_Bool("Create Link", null, false, true)) b.linkSelection();
+        if (c.igMenuItem_Bool("Create Link", null, false, !ro)) b.linkSelection();
         if (c.igMenuItem_Bool("Get Info", "Alt+Enter", false, true)) self.openProperties(b, i);
     }
 
@@ -233,8 +236,11 @@ pub const ViewActions = struct {
 
     fn archiveSection(self: *ViewActions, b: *Browser, e: scan.Entry) void {
         _ = self;
-        // A package, document or AppImage that's an archive inside (Finder's Show
-        // Package Contents).
+        // Inside an archive there's nothing to extract or compress in place: copying
+        // items out is how they come out.
+        if (b.virtualView()) return;
+        // A package or document that's an archive inside (Finder's Show Package
+        // Contents).
         if (b.sel.count() == 1 and !e.isDir() and b.canShowContents(e.name)) {
             c.igSeparator();
             if (c.igMenuItem_Bool("Show Contents", null, false, true)) {
@@ -648,6 +654,8 @@ pub const ViewActions = struct {
     pub fn drawInfo(self: *ViewActions, b: *Browser) bool {
         const fs = c.igGetFontSize();
         const path = self.prop_path_buf[0..self.prop_path_len];
+        // Inside an archive (read in place) the item is shown, not changed.
+        const ro = core.arcfs.split(path) != null and b.insideArchive() != null;
 
         // Header, as Finder's Get Info: the icon, the name, size and date.
         const head_pos = c.igGetCursorScreenPos();
@@ -704,6 +712,8 @@ pub const ViewActions = struct {
         }
 
         if (infoSection("Name & Extension:", false)) {
+            c.igBeginDisabled(ro);
+            defer c.igEndDisabled();
             c.igSetNextItemWidth(-1);
             const enter = c.igInputText("##propname", &self.prop_name, self.prop_name.len, c.ImGuiInputTextFlags_EnterReturnsTrue, null, null);
             const typed = std.mem.sliceTo(&self.prop_name, 0);
@@ -720,7 +730,7 @@ pub const ViewActions = struct {
             c.igEndDisabled();
         }
 
-        if (infoSection("Comments:", true)) {
+        if (!ro and infoSection("Comments:", true)) {
             _ = c.igInputTextMultiline("##comment", &self.prop_comment, self.prop_comment.len, cimgui.vec2(-1, fs * 3.5), 0, null, null);
             if (c.igIsItemDeactivated() and !std.mem.eql(u8, std.mem.sliceTo(&self.prop_comment, 0), std.mem.sliceTo(&self.prop_comment_saved, 0))) {
                 if (core.comments.write(b.alloc, path, std.mem.sliceTo(&self.prop_comment, 0))) |_| {
@@ -788,6 +798,8 @@ pub const ViewActions = struct {
         // Permissions: the classic 3×3 grid. Apply writes them with chmod.
         const close = c.igIsKeyPressed_Bool(c.ImGuiKey_Escape, false) and !c.igIsAnyItemActive();
         if (!infoSection("Sharing & Permissions:", false)) return close;
+        c.igBeginDisabled(ro);
+        defer c.igEndDisabled();
         if (c.igBeginTable("##perm", 4, c.ImGuiTableFlags_SizingFixedFit, cimgui.vec2(0, 0), 0)) {
             c.igTableSetupColumn("", 0, 0, 0);
             c.igTableSetupColumn("Read", 0, 0, 0);

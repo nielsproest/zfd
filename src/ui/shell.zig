@@ -257,7 +257,8 @@ pub const Shell = struct {
     rf_seen_len: usize = 0,
     prefs_mtime: i96 = 0, // the folders file's mtime when last read or written
     prefs_checked: f64 = 0, // when it was last looked at (ImGui time)
-    archives: ?*core.archives.Registry = null, // archives opened as folders (owned)
+    // Where files taken out of archives go (owned); null: archives aren't browsed.
+    temp_files: ?*core.archives.TempFiles = null,
     path_buf: [4097]u8 = @splat(0),
     path_active: bool = false,
     focus_path: bool = false, // grab keyboard focus for the path bar next frame (Ctrl+L)
@@ -392,9 +393,9 @@ pub const Shell = struct {
             self.tags_path = std.fs.path.join(alloc, &.{ cfg_dir, "zfd", "tags" }) catch &.{};
             self.loadTags();
         }
-        // Archives open as folders, extracted under the cache dir (see core/archives.zig).
-        // Not in a file chooser: a file picked from inside an archive would be a path
-        // into a copy that's deleted when the dialog closes.
+        // Archives open as folders, read in place (core/arcfs.zig); a file opened from
+        // one is taken out to the cache dir (core/archives.zig). Not in a file chooser:
+        // a file picked inside an archive has no path the app could open.
         if (self.dialog == null) {
             const ch = std.c.getenv("XDG_CACHE_HOME");
             const cache_home = if (ch != null and std.mem.span(ch.?).len > 0)
@@ -403,11 +404,12 @@ pub const Shell = struct {
                 (std.fs.path.join(alloc, &.{ home, ".cache" }) catch null);
             if (cache_home) |dir| {
                 defer alloc.free(dir);
-                if (alloc.create(core.archives.Registry)) |reg| {
-                    if (core.archives.Registry.init(io, alloc, dir)) |r| {
-                        reg.* = r;
-                        self.archives = reg;
-                    } else |_| alloc.destroy(reg);
+                if (alloc.create(core.archives.TempFiles)) |tf| {
+                    if (core.archives.TempFiles.init(io, alloc, dir)) |t| {
+                        tf.* = t;
+                        self.temp_files = tf;
+                        @import("quicklook.zig").temp_files = tf; // PDFs, videos inside archives
+                    } else |_| alloc.destroy(tf);
                 } else |_| {}
             }
         }
@@ -440,7 +442,7 @@ pub const Shell = struct {
         // the async listing arrives and rebuildView runs).
         b.search_ci = settings.search_ci;
         b.prefs = self.prefs;
-        b.archives = self.archives;
+        b.temp_files = self.temp_files;
         b.applyFolderView();
         // Probe for bsdtar here (not in Browser.init): the pure `core` module stays
         // libc-free, and findTool reads std.c.environ. null just hides the archive menu.
@@ -1143,9 +1145,9 @@ pub const Shell = struct {
         if (self.prefs_path.len > 0) self.alloc.free(self.prefs_path);
         self.prefs.deinit();
         self.alloc.destroy(self.prefs);
-        if (self.archives) |r| {
-            r.deinit(); // removes the extracted copies
-            self.alloc.destroy(r);
+        if (self.temp_files) |t| {
+            t.deinit(); // removes the files taken out of archives
+            self.alloc.destroy(t);
         }
         if (self.trash_items.len > 0) core.trash.free(self.alloc, self.trash_items);
     }
@@ -1791,7 +1793,7 @@ pub const Shell = struct {
         const nb = Browser.init(self.alloc, self.io, src.location(), self.trash_home, self.home) catch return;
         nb.shareClipboard(self.clipboard);
         nb.prefs = self.prefs;
-        nb.archives = self.archives;
+        nb.temp_files = self.temp_files;
         nb.applyFolderView();
         nb.search_ci = src.search_ci;
         nb.archive_tool = core.archive.findTool(self.io, self.alloc);
@@ -1843,7 +1845,7 @@ pub const Shell = struct {
         self.actions.procwatch = self.procwatch;
         self.actions.gallery = &self.gallery_ql;
         // Settings > General: archives open as folders, or in their default app.
-        for (self.liveBrowsers()) |t| t.archives = if (self.archive_browse) self.archives else null;
+        for (self.liveBrowsers()) |t| t.temp_files = if (self.archive_browse) self.temp_files else null;
         if (self.actions.dirs) |d| d.pump();
         const vp = c.igGetMainViewport();
         c.igSetNextWindowPos(vp.*.WorkPos, c.ImGuiCond_Always, cimgui.vec2(0, 0));
@@ -3145,7 +3147,7 @@ pub const Shell = struct {
         // (name ascending) and it looks like the sort was forgotten. Takes effect when
         // the async listing arrives and rebuildView runs.
         b.prefs = self.prefs;
-        b.archives = self.archives;
+        b.temp_files = self.temp_files;
         b.applyFolderView();
         b.search_ci = src.search_ci;
         b.archive_tool = core.archive.findTool(self.io, self.alloc); // per-tab (owned); null hides the menu
@@ -3328,7 +3330,7 @@ pub const Shell = struct {
         if (c.igMenuItem_Bool("Duplicate Tab", null, false, true)) {
             if (self.openTab(b.location())) |nb| {
                 nb.prefs = self.prefs;
-                nb.archives = self.archives;
+                nb.temp_files = self.temp_files;
                 nb.applyFolderView();
             }
         }
@@ -3497,12 +3499,7 @@ pub const Shell = struct {
         var i: usize = 0;
         while (i < self.tabs.items.len) : (i += 1) {
             const b = self.tabs.items[i];
-            const base = if (b.in_recent)
-                "Recent"
-            else if (b.insideArchive()) |o|
-                (if (std.mem.eql(u8, b.dir, o.root)) std.fs.path.basename(o.src) else std.fs.path.basename(b.dir))
-            else
-                std.fs.path.basename(b.dir);
+            const base = if (b.in_recent) "Recent" else std.fs.path.basename(b.dir);
             var lbl_buf: [300]u8 = undefined;
             // "###" + the browser's address: the tab's ImGui ID is its IDENTITY, not its
             // label. It used to be "<folder>##<index>", and "##" hashes the visible part
@@ -4087,7 +4084,7 @@ pub const Shell = struct {
     fn goEnclosing(self: *Shell, b: *Browser) void {
         _ = self;
         if (b.in_recent) return;
-        if (b.archives) |reg| if (reg.atRoot(b.dir) != null) {
+        if (b.insideArchive()) |o| if (o.inner.len == 0) {
             _ = b.leaveArchive();
             return;
         };
@@ -4260,7 +4257,7 @@ pub const Shell = struct {
             if (c.igMenuItem_Bool("Duplicate Tab", null, false, true)) {
                 if (self.openTab(b.location())) |nb| {
                     nb.prefs = self.prefs;
-                    nb.archives = self.archives;
+                    nb.temp_files = self.temp_files;
                     nb.applyFolderView();
                 }
             }
@@ -4808,8 +4805,6 @@ pub const Shell = struct {
             "Network"
         else if (b.in_recent)
             "Recent"
-        else if (b.insideArchive()) |o|
-            (if (std.mem.eql(u8, b.dir, o.root)) std.fs.path.basename(o.src) else std.fs.path.basename(b.dir))
         else if (std.mem.eql(u8, b.dir, "/"))
             "Computer"
         else if (std.mem.eql(u8, b.dir, self.home))
@@ -4857,19 +4852,13 @@ pub const Shell = struct {
     /// first, down to the computer: Finder's title-bar path menu. Middle-click opens
     /// one in a new tab.
     fn drawTitleMenu(self: *Shell, b: *Browser) void {
-        var disp_buf: [std.fs.max_path_bytes * 2]u8 = undefined;
-        const arch = b.insideArchive();
-        const dir: []const u8 = if (arch) |o|
-            (std.mem.print(&disp_buf, "{s}{s}", .{ o.src, b.dir[o.root.len..] }) catch b.dir)
-        else
-            b.dir;
+        const dir = b.dir;
         var ends: [128]usize = undefined;
         const n = pathSegments(dir, &ends);
         var k = n;
         while (k > 0) {
             k -= 1;
-            var tb: [std.fs.max_path_bytes * 2]u8 = undefined;
-            const target = crumbTarget(&tb, arch, dir, ends[k]);
+            const target = dir[0..ends[k]];
             const name = if (k == 0) "Computer" else segName(dir, ends, k);
             var lb: [300]u8 = undefined;
             const label = std.mem.printSentinel(&lb, "{s}##tm{d}", .{ name, k }, 0) catch continue;
@@ -5040,15 +5029,8 @@ pub const Shell = struct {
         const dl = c.igGetWindowDrawList();
         _ = dl;
 
-        // Inside an archive, show where the archive really is ("…/Downloads/pics.zip/
-        // 2025") rather than its extracted copy's cache path; crumbTarget maps each
-        // segment back to the folder it stands for.
-        var disp_buf: [std.fs.max_path_bytes * 2]u8 = undefined;
-        const arch = b.insideArchive();
-        const dir: []const u8 = if (arch) |o|
-            (std.mem.print(&disp_buf, "{s}{s}", .{ o.src, b.dir[o.root.len..] }) catch b.dir)
-        else
-            b.dir;
+        // (Inside an archive the path goes through it: "…/Downloads/pics.zip/2025".)
+        const dir = b.dir;
 
         var ends: [128]usize = undefined;
         var n = pathSegments(dir, &ends);
@@ -5090,8 +5072,7 @@ pub const Shell = struct {
             const name = segName(dir, ends, k);
             var lb: [300]u8 = undefined;
             const label = std.mem.printSentinel(&lb, "{s}##crumb{d}", .{ name, k }, 0) catch continue;
-            var tb: [std.fs.max_path_bytes * 2]u8 = undefined;
-            const target = crumbTarget(&tb, arch, dir, ends[k]);
+            const target = dir[0..ends[k]];
             if (c.igButton(label.ptr, cimgui.vec2(0, 0)) and !std.mem.eql(u8, target, b.dir)) {
                 // navigate frees the old b.dir, which `dir` and `target` point into:
                 // the rest of the bar waits for the next frame.
@@ -5231,8 +5212,25 @@ pub const Shell = struct {
         if (!self.mouseOutside()) return;
         // The snapshot, not the live selection: by the time the pointer has left the
         // window the listing may have been rebuilt underneath it.
-        const paths = src.dragPaths();
-        if (paths.len == 0) return;
+        const dragged = src.dragPaths();
+        if (dragged.len == 0) return;
+        // Out of an archive, another app needs real files: each dragged item is taken
+        // out (alone, to a temporary folder) and that's what's handed over. This waits
+        // for the extraction; a big file holds the drag up that long.
+        var taken = std.ArrayList([]u8).empty;
+        defer {
+            for (taken.items) |t| b.alloc.free(t);
+            taken.deinit(b.alloc);
+        }
+        if (src.insideArchive() != null) {
+            const tf = self.temp_files orelse return;
+            for (dragged) |p| {
+                const out = tf.takeOut(b.alloc, p, null) catch continue;
+                taken.append(b.alloc, out) catch b.alloc.free(out);
+            }
+            if (taken.items.len == 0) return;
+        }
+        const paths: []const []const u8 = if (taken.items.len > 0) taken.items else dragged;
         // Two flavours of the same set: text/uri-list (what file managers and image
         // editors want) and plain text (what chat/editor windows paste). Advertising
         // both is why a drag into a text field now yields paths instead of nothing.
@@ -5754,16 +5752,6 @@ fn joinSub(buf: []u8, base: []const u8, sub: []const u8) []const u8 {
     return std.mem.print(buf, "{s}/{s}", .{ base, sub }) catch base;
 }
 
-/// crumbTarget is the folder a breadcrumb segment ending at `end` of the displayed
-/// path stands for. Outside archives that's just the prefix; inside one, segments up
-/// to the archive's folder are real folders, the archive's own segment is its
-/// extracted copy, and deeper ones are folders inside that copy.
-fn crumbTarget(buf: []u8, arch: ?core.archives.Opened, disp: []const u8, end: usize) []const u8 {
-    const o = arch orelse return disp[0..end];
-    if (end < o.src.len) return disp[0..end];
-    return std.mem.print(buf, "{s}{s}", .{ o.root, disp[o.src.len..end] }) catch disp[0..end];
-}
-
 /// drawReadOnly is Finder's quiet read-only mark at the start of the status bar: a
 /// small lock and the word, with the reason on hover (inside an archive, changes aren't
 /// saved back into it).
@@ -5785,7 +5773,7 @@ fn drawReadOnly(b: *Browser) void {
     c.igPopStyleColor(1);
     if (c.igIsItemHovered(0) or c.igIsMouseHoveringRect(pos, cimgui.vec2(pos.x + w + 4, pos.y + h), true)) {
         var buf: [600]u8 = undefined;
-        const tip = std.mem.printSentinel(&buf, "Inside {s}: changes here aren't saved into the archive.", .{std.fs.path.basename(o.src)}, 0) catch "Inside an archive";
+        const tip = std.mem.printSentinel(&buf, "Inside {s}, read in place: copy items out to change them.", .{std.fs.path.basename(o.src)}, 0) catch "Inside an archive";
         c.igSetTooltip("%s", tip.ptr);
     }
     c.igSameLine(0, 0);

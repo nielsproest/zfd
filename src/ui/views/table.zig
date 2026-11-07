@@ -795,7 +795,7 @@ fn drawFolderHint(b: *Browser, folder: []const u8, label: [:0]const u8, x: f32, 
     const name_w = c.igCalcTextSize(label.ptr, label.ptr + vis_end, false, -1).x;
     var buf: [600]u8 = undefined;
     // Recent lists paths relative to "/": show them absolute.
-    const hint = std.mem.print(&buf, "  {s}{s}", .{ if (b.virtualView()) "/" else "", folder }) catch return;
+    const hint = std.mem.print(&buf, "  {s}{s}", .{ if (b.in_recent) "/" else "", folder }) catch return;
     const pos = cimgui.vec2(x + name_w, y);
     const col = c.igGetColorU32_Vec4(theme.dim());
     c.ImDrawList_AddText_Vec2(c.igGetWindowDrawList(), pos, col, hint.ptr, hint.ptr + hint.len);

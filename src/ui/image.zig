@@ -9,6 +9,8 @@ extern fn zfd_image_load(path: [*:0]const u8, max_dim: c_int, w: *c_int, h: *c_i
 extern fn zfd_image_orient(px: [*]u8, w: c_int, h: c_int, o: c_int, ow: *c_int, oh: *c_int) [*]u8;
 pub extern fn zfd_image_size(path: [*:0]const u8, w: *c_int, h: *c_int) c_int;
 pub extern fn zfd_image_free(px: [*]u8) void;
+pub extern fn zfd_image_size_mem(buf: [*]const u8, len: c_int, w: *c_int, h: *c_int) c_int;
+pub extern fn zfd_image_load_mem(buf: [*]const u8, len: c_int, max_dim: c_int, w: *c_int, h: *c_int) ?[*]u8;
 
 /// load decodes `path` (shrunk to `max_dim` on its longest side) and turns it
 /// upright; null when stb_image can't read it.

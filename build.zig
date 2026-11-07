@@ -5,13 +5,25 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    // The pure core: no C, no GLFW/X11/ImGui. Its own module, so `zig build
-    // test-core` compiles and tests the logic with zero GUI dependencies: the
-    // strict layering (GoFileDialog goal 2) enforced by the build graph itself.
+    const translate_c = b.dependency("translate_c", .{});
+
+    // The core: no GLFW/X11/ImGui. Its own module, so `zig build test-core`
+    // compiles and tests the logic with zero GUI dependencies: the strict layering
+    // (GoFileDialog goal 2) enforced by the build graph itself. Its one C library
+    // is libarchive, for browsing archives in place (arcfs.zig).
+    const c_archive: Translator = .init(translate_c, .{
+        .c_source_file = b.path("src/c/archive.h"),
+        .target = target,
+        .optimize = optimize,
+        .link_system_libs = &.{.{ .name = "libarchive" }},
+    });
     const core = b.addModule("core", .{
         .root_source_file = b.path("src/core/core.zig"),
         .target = target,
+        .link_libc = true,
+        .imports = &.{.{ .name = "c_archive", .module = c_archive.mod }},
     });
+    core.linkSystemLibrary("libarchive", .{});
 
     // Dear ImGui compiled via cimgui with the GLFW + OpenGL3 backends. Both are
     // packages in build.zig.zon, pinned by commit (docking branch).
@@ -21,7 +33,6 @@ pub fn build(b: *std.Build) void {
     // The C headers the GUI talks to, each translated into a Zig module by the
     // translate-c package (@cImport is gone as of Zig 0.17). One header per C
     // surface, kept in src/c/.
-    const translate_c = b.dependency("translate_c", .{});
     const c_imgui: Translator = .init(translate_c, .{
         .c_source_file = b.path("src/c/imgui.h"),
         .target = target,

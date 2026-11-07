@@ -53,6 +53,9 @@ pub const Listing = struct {
     // unknown). The folder watch compares it with the time it was added at, to
     // catch a change that fell between the two.
     dir_mtime: i64 = 0,
+    // Listed from inside an archive (arcfs), not a folder on disk: read-only, and its
+    // details came with the names.
+    in_archive: bool = false,
 
     pub fn deinit(self: Listing, alloc: std.mem.Allocator) void {
         for (self.entries) |e| {

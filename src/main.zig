@@ -206,8 +206,10 @@ fn resolveCliDir(gpa: std.mem.Allocator, arg: []const u8) ?[]u8 {
     return std.fs.path.resolve(gpa, &.{ cwd, path }) catch null;
 }
 
-/// isDir reports whether `path` is an openable directory.
+/// isDir reports whether `path` is an openable directory: on disk, or a folder
+/// inside an archive (read in place).
 fn isDir(io: std.Io, path: []const u8) bool {
+    if (core.arcfs.isArchived(path)) return if (core.arcfs.info(io, path)) |i| i.kind == .dir else |_| false;
     var d = std.Io.Dir.cwd().openDir(io, path, .{}) catch return false;
     d.close(io);
     return true;

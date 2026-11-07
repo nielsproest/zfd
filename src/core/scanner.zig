@@ -16,6 +16,7 @@
 const std = @import("std");
 const scan = @import("scan.zig");
 const recent = @import("recent.zig");
+const arcfs = @import("arcfs.zig");
 
 pub const Scanner = struct {
     io: std.Io,
@@ -186,7 +187,8 @@ pub const Scanner = struct {
             // Permanent errors (not-found, denied, not-a-dir, …) break out immediately.
             // The Recent place is a virtual folder with its own loader.
             // Names and kinds only: the folder shows at once, the details follow (details.zig).
-            var res = if (recent.dataHomeOf(path)) |data| recent.load(sh.io, sh.alloc, data) else scan.readDirOpts(sh.io, sh.alloc, path, &sh.abandon, false);
+            // Inside an archive (arcfs): listed from its index, nothing unpacked.
+            var res = if (recent.dataHomeOf(path)) |data| recent.load(sh.io, sh.alloc, data) else arcfs.readAny(sh.io, sh.alloc, path, &sh.abandon, false);
             var attempt: u6 = 0;
             while (attempt < 6) : (attempt += 1) {
                 if (res) |_| break else |e| switch (e) {
