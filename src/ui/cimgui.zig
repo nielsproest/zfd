@@ -45,6 +45,10 @@ pub extern fn zfd_want_text_input() bool;
 /// zfd_frame_hash hashes the rendered frame's draw data (0: must draw; imgui_shim.cpp).
 pub extern fn zfd_frame_hash(fb_w: c_int, fb_h: c_int) u64;
 
+/// zfd_sync_viewports has ImGui take the real position of its OS windows the window
+/// manager placed elsewhere than asked (imgui_shim.cpp). Call before igNewFrame.
+pub extern fn zfd_sync_viewports() void;
+
 /// zfd_free_ctrl_tab unbinds ImGui's Ctrl+Tab window switcher (the shell cycles tabs).
 pub extern fn zfd_free_ctrl_tab() void;
 

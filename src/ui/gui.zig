@@ -474,6 +474,7 @@ const Backend = struct {
         // Events are pumped by glfwWaitEventsTimeout in the loop (idle throttle).
         c.ImGui_ImplOpenGL3_NewFrame();
         c.ImGui_ImplGlfw_NewFrame();
+        cimgui.zfd_sync_viewports();
         c.igNewFrame();
     }
 

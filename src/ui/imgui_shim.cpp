@@ -6,6 +6,7 @@
 #include <GL/gl.h>
 #include <GLFW/glfw3.h>
 #include <cstdio>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 
@@ -183,6 +184,39 @@ extern "C" void zfd_hook_viewport_windows(zfd_viewport_cb cb) {
         pio.Renderer_RenderWindow = zfd_vp_render;
     }
     g_vp_cb = cb;
+}
+
+// zfd_sync_viewports, before each frame, has ImGui take the real position of an
+// OS window of its own that the window manager put somewhere else than asked
+// (KWin placing Quick Look back out of full screen where it saw fit). ImGui's GLFW
+// backend ignores the window's move events for the frame it moved it in and the
+// next, so a correction landing then was lost: ImGui went on believing the window
+// was where it had asked, and every click landed that far off. Only a difference
+// that has lasted a few frames with no mouse button down counts (a window being
+// dragged trails its requested position by a frame or two).
+extern "C" void zfd_sync_viewports(void) {
+    ImGuiPlatformIO &pio = ImGui::GetPlatformIO();
+    if (!pio.Platform_GetWindowPos) return;
+    struct Seen { ImGuiID id; int frames; };
+    static Seen seen[8] = {};
+    const bool held = ImGui::IsAnyMouseDown();
+    for (int i = 1; i < pio.Viewports.Size; i++) { // (0: the main window, its own)
+        ImGuiViewport *vp = pio.Viewports[i];
+        if (!vp->PlatformWindowCreated || vp->PlatformRequestMove) continue;
+        Seen *s = nullptr;
+        for (Seen &e : seen) if (e.id == vp->ID) { s = &e; break; }
+        if (!s) for (Seen &e : seen) if (e.id == 0 || e.frames < 0) { e = {vp->ID, 0}; s = &e; break; }
+        if (!s) continue;
+        ImVec2 real = pio.Platform_GetWindowPos(vp);
+        bool off = fabsf(real.x - vp->Pos.x) > 0.5f || fabsf(real.y - vp->Pos.y) > 0.5f;
+        ImGuiViewportP *vpp = (ImGuiViewportP *)vp; // (where ImGui last put it)
+        bool settled = vpp->LastPlatformPos.x == vp->Pos.x && vpp->LastPlatformPos.y == vp->Pos.y;
+        s->frames = (off && settled && !held) ? s->frames + 1 : 0;
+        if (s->frames >= 3) {
+            vp->PlatformRequestMove = true; // NewFrame takes the window's real position
+            s->frames = 0;
+        }
+    }
 }
 
 // zfd_frame_hash sums up what the frame just rendered (igRender) would put on screen:
