@@ -16,7 +16,10 @@ const x11 = @import("x11.zig");
 /// This is how `zfd <file>` / `zfd --select <file>` reveals a file in its folder.
 pub fn run(alloc: std.mem.Allocator, io: std.Io, trash_home: []const u8, home: []const u8, start_override: ?[]const u8, reveal_name: ?[]const u8, pos: ?[2]i32, csd: bool, debug: bool, settings: *core.config.Settings) !void {
     x11.debug = debug;
-    var be = try Backend.init(csd, true);
+    // Hidden until it's sized, placed and set up: mapped at once, it showed blank at
+    // the default size and place, then jumped under the pointer (a torn-off tab's
+    // window) and resized, which looked like a blink.
+    var be = try Backend.init(csd, false);
     defer be.deinit();
     installFont(io, alloc); // before the first frame builds the font atlas
     c.glfwSetWindowSize(be.window, settings.win_w, settings.win_h);
@@ -38,6 +41,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, trash_home: []const u8, home: [
     c.glfwSetWindowUserPointer(be.window, @ptrCast(&shell));
     _ = c.glfwSetDropCallback(be.window, dropCallback);
     x11.markTabWindow(be.window); // other ZFD windows may drop torn-off tabs on us
+    c.glfwShowWindow(be.window);
     // Our own launch is done: the desktop can stop its launch feedback.
     if (core.fsops.launch_env) |env| if (env.get("DESKTOP_STARTUP_ID")) |id| x11.completeStartup(be.window, id);
 
