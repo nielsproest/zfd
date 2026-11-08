@@ -3965,7 +3965,7 @@ pub const Shell = struct {
         self.search_active = c.igIsItemActive();
         const empty_escape = self.search_active and self.search_buf[0] == 0 and c.igIsKeyPressed_Bool(c.ImGuiKey_Escape, false);
         if (c.igBeginItemTooltip()) {
-            cimgui.textUnformatted("Filter by name; * and ? are wildcards (e.g. *.txt).\nkind:image (or movie, music, document, pdf, archive, folder, code) and tag:red narrow it.");
+            cimgui.textUnformatted("Filter by name; * and ? are wildcards (e.g. *.txt).\nkind:image (or movie, music, document, pdf, archive, folder, code) and tag:red narrow it.\nAfter a $, text to find inside the files: *.md$TODO (\\$ for a $ in a name).");
             c.igEndTooltip();
         }
         const fmin = c.igGetItemRectMin();
@@ -5696,8 +5696,13 @@ fn drawStatus(self: *Shell, b: *Browser) void {
     drawIconSizeSlider(self, b);
     if (b.deepStatus()) |ds| {
         var buf: [160]u8 = undefined;
-        const msg = if (!ds.done)
-            std.mem.print(&buf, "Searching subfolders\u{2026} {d} found ({d} folders)", .{ ds.found, ds.dirs }) catch "Searching\u{2026}"
+        const msg = if (ds.text and !ds.sub)
+            (if (!ds.done)
+                std.mem.print(&buf, "Searching inside files\u{2026} {d} found", .{ds.found}) catch "Searching\u{2026}"
+            else
+                std.mem.print(&buf, "{d} file{s} with that text", .{ ds.found, if (ds.found == 1) "" else "s" }) catch "")
+        else if (!ds.done)
+            std.mem.print(&buf, "Searching {s}subfolders\u{2026} {d} found ({d} folders)", .{ if (ds.text) "inside files in " else "", ds.found, ds.dirs }) catch "Searching\u{2026}"
         else
             std.mem.print(&buf, "{d} found in {d} folders{s}", .{ ds.found, ds.dirs, if (ds.capped) " (showing the first 5000)" else "" }) catch "";
         cimgui.textUnformatted(msg);

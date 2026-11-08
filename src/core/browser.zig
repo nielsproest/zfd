@@ -651,6 +651,7 @@ pub const Browser = struct {
     /// toggleSearchCI flips case-insensitive quick-search and refilters.
     pub fn toggleSearchCI(self: *Browser) void {
         self.search_ci = !self.search_ci;
+        if (self.deep_search != null) return self.restartDeep(); // (the worker's search: again)
         self.rebuildViewPreserving();
     }
 
@@ -665,7 +666,8 @@ pub const Browser = struct {
     pub fn setSearch(self: *Browser, query: []const u8) void {
         self.search.clearRetainingCapacity();
         self.search.appendSlice(self.alloc, query) catch {};
-        if (self.deep) return self.restartDeep();
+        // Subfolders, or text inside files ("name$text"): the worker's search.
+        if (self.deep or self.deep_search != null or query_mod.hasContent(query)) return self.restartDeep();
         self.rebuildViewPreserving();
     }
 
@@ -675,7 +677,7 @@ pub const Browser = struct {
     pub fn setDeep(self: *Browser, on: bool) void {
         if (on == self.deep) return;
         self.deep = on;
-        if (on) return self.restartDeep();
+        if (on or query_mod.hasContent(self.search.items)) return self.restartDeep(); // (text: this folder alone)
         self.stopDeep();
         self.refresh(); // back to the folder's own listing
     }
@@ -685,11 +687,11 @@ pub const Browser = struct {
         return self.deep_search != null;
     }
 
-    pub const DeepStatus = struct { found: usize, dirs: u64, done: bool, capped: bool };
+    pub const DeepStatus = struct { found: usize, dirs: u64, done: bool, capped: bool, text: bool, sub: bool };
 
     pub fn deepStatus(self: *Browser) ?DeepStatus {
         const d = self.deep_search orelse return null;
-        return .{ .found = d.count(), .dirs = d.dirsSearched(), .done = d.isDone(), .capped = d.wasCapped() };
+        return .{ .found = d.count(), .dirs = d.dirsSearched(), .done = d.isDone(), .capped = d.wasCapped(), .text = d.findsText(), .sub = self.deep };
     }
 
     /// stopDeepWalk ends the walk early, keeping the results found so far.
@@ -708,11 +710,12 @@ pub const Browser = struct {
     fn restartDeep(self: *Browser) void {
         const had = self.deep_search != null;
         self.stopDeep();
-        if (self.search.items.len == 0) {
+        // Nothing to look for in subfolders or inside files: the folder's own listing.
+        if (self.search.items.len == 0 or (!self.deep and !query_mod.hasContent(self.search.items))) {
             if (had) self.refresh();
             return self.rebuildViewPreserving();
         }
-        self.deep_search = DeepSearch.start(self.io, self.alloc, self.dir, self.search.items, self.search_ci, self.show_hidden) catch null;
+        self.deep_search = DeepSearch.startIn(self.io, self.alloc, self.dir, self.search.items, self.search_ci, self.show_hidden, self.deep) catch null;
         self.deep_last_ns = 0;
         // Show the (empty) result set right away rather than the folder's listing
         // filtered by the new query, which would look like the finished answer.

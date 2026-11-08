@@ -4,6 +4,10 @@
 //! Matches stream into a result list the Browser shows as a listing whose names are
 //! paths relative to the searched folder ("sub/dir/file.txt").
 //!
+//! It also finds text inside files ("name$text" in the search box: query.zig), in
+//! the folder alone or below it too: a file whose name matches is read (up to
+//! content_max bytes; binary files skipped) and kept if the text is in it.
+//!
 //! Cancelable and safe to abandon (refcounted like SizeProbe: a new query or leaving
 //! the folder just releases the old walk). Symlinked folders are not followed (no
 //! cycles), hidden entries are skipped unless shown, and results are capped so a
@@ -14,6 +18,7 @@ const scan = @import("scan.zig");
 const query_mod = @import("query.zig");
 
 pub const max_results: usize = 5000;
+pub const content_max: usize = 8 << 20; // bytes of a file read for its text
 
 pub const DeepSearch = struct {
     io: std.Io,
@@ -22,6 +27,7 @@ pub const DeepSearch = struct {
     query: []u8,
     ci: bool,
     show_hidden: bool,
+    recurse: bool = true, // into subfolders (else the folder alone: a text search)
     mutex: std.Io.Mutex = .init,
     results: std.ArrayList(scan.Entry) = .empty, // guarded by mutex
     dirs: std.atomic.Value(u64) = .init(0), // folders searched so far
@@ -33,13 +39,18 @@ pub const DeepSearch = struct {
     /// start begins searching below `root` for names matching `query` (the same glob
     /// rules as the quick-search). The caller must call release() exactly once.
     pub fn start(io: std.Io, alloc: std.mem.Allocator, root: []const u8, query: []const u8, ci: bool, show_hidden: bool) !*DeepSearch {
+        return startIn(io, alloc, root, query, ci, show_hidden, true);
+    }
+
+    /// startIn is start, below `root` only when `recurse` (else just in it).
+    pub fn startIn(io: std.Io, alloc: std.mem.Allocator, root: []const u8, query: []const u8, ci: bool, show_hidden: bool, recurse: bool) !*DeepSearch {
         const self = try alloc.create(DeepSearch);
         errdefer alloc.destroy(self);
         const r = try alloc.dupe(u8, root);
         errdefer alloc.free(r);
         const q = try alloc.dupe(u8, query);
         errdefer alloc.free(q);
-        self.* = .{ .io = io, .alloc = alloc, .root = r, .query = q, .ci = ci, .show_hidden = show_hidden };
+        self.* = .{ .io = io, .alloc = alloc, .root = r, .query = q, .ci = ci, .show_hidden = show_hidden, .recurse = recurse };
         const t = try std.Thread.spawn(.{}, run, .{self});
         t.detach();
         return self;
@@ -101,6 +112,15 @@ pub const DeepSearch = struct {
         alloc.destroy(self);
     }
 
+    fn fileHas(self: *DeepSearch, d: std.Io.Dir, name: []const u8, text: []const u8) bool {
+        return fileHasIn(self.io, d, name, text, self.ci, &self.cancel);
+    }
+
+    /// findsText reports whether this search looks inside the files.
+    pub fn findsText(self: *const DeepSearch) bool {
+        return query_mod.hasContent(self.query);
+    }
+
     fn run(self: *DeepSearch) void {
         defer self.unref();
         defer self.done.store(true, .release);
@@ -140,9 +160,14 @@ pub const DeepSearch = struct {
                     .sym_link => .symlink,
                     else => .other,
                 };
-                if (q.matchesName(e.name, kind, self.ci)) match: {
+                const wants = if (q.content.len > 0) kind == .file else true; // (text: in files)
+                if (wants and q.matchesName(e.name, kind, self.ci)) match: {
                     const entry = scan.entryAt(self.alloc, d, e.name, rel_name, kind) catch break :match;
                     if (!q.matchesDetails(entry)) {
+                        freeEntry(self.alloc, entry);
+                        break :match;
+                    }
+                    if (q.content.len > 0 and !self.fileHas(d, e.name, q.content)) {
                         freeEntry(self.alloc, entry);
                         break :match;
                     }
@@ -156,7 +181,7 @@ pub const DeepSearch = struct {
                         return;
                     }
                 }
-                if (kind == .dir) {
+                if (kind == .dir and self.recurse) {
                     const child = self.alloc.dupe(u8, rel_name) catch continue;
                     queue.append(self.alloc, child) catch self.alloc.free(child);
                 }
@@ -164,6 +189,34 @@ pub const DeepSearch = struct {
         }
     }
 };
+
+/// fileHas reports whether the file `name` in `d` holds `text` (in its first
+/// content_max bytes; false for a binary file: a NUL in its start).
+fn fileHasIn(io: std.Io, d: std.Io.Dir, name: []const u8, text: []const u8, ci: bool, cancel: *const std.atomic.Value(bool)) bool {
+    var f = d.openFile(io, name, .{}) catch return false;
+    defer f.close(io);
+    var buf: [64 * 1024 + 512]u8 = undefined;
+    const keep = @min(text.len -| 1, 512); // carried over, so a match across reads counts
+    var have: usize = 0;
+    var read: usize = 0;
+    var first = true;
+    while (read < content_max) {
+        if (cancel.load(.acquire)) return false;
+        const rc = std.os.linux.read(f.handle, buf[have..].ptr, buf.len - have);
+        if (std.os.linux.errno(rc) != .SUCCESS or rc == 0) break;
+        const got = have + rc;
+        if (first) {
+            first = false;
+            if (std.mem.indexOfScalar(u8, buf[0..@min(got, 8192)], 0) != null) return false; // binary
+        }
+        if (query_mod.indexOfCase(buf[0..got], text, ci) != null) return true;
+        read += rc;
+        const k = @min(keep, got);
+        std.mem.copyForwards(u8, buf[0..k], buf[got - k .. got]);
+        have = k;
+    }
+    return false;
+}
 
 fn freeEntry(alloc: std.mem.Allocator, e: scan.Entry) void {
     alloc.free(e.name);
@@ -216,4 +269,36 @@ test "DeepSearch can be released mid-walk" {
     s.release();
     var spins: usize = 0;
     while (spins < 200_000) : (spins += 1) std.Thread.yield() catch {};
+}
+
+test "DeepSearch finds text inside files, in the folder alone or below it" {
+    const a = testing.allocator;
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "sub");
+    try tmp.dir.writeFile(io, .{ .sub_path = "notes.md", .data = "- [ ] TODO: pack" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "done.md", .data = "all done" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "todo.txt", .data = "TODO elsewhere" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "sub/deep.md", .data = "a todo, lower case" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "blob.md", .data = "TODO\x00binary" });
+    const root = try tmp.dir.realPathFileAlloc(io, ".", a);
+    defer a.free(root);
+
+    // This folder only: the .md holding TODO (not the .txt, not the binary).
+    const s = try DeepSearch.startIn(io, a, root, "*.md$TODO", true, false, false);
+    defer s.release();
+    waitDone(s);
+    const l = try s.snapshot(a);
+    defer l.deinit(a);
+    try testing.expectEqual(@as(usize, 1), l.entries.len);
+    try testing.expectEqualStrings("notes.md", l.entries[0].name);
+
+    // Below it too, case aside: the subfolder's one as well.
+    const s2 = try DeepSearch.startIn(io, a, root, "*.md$TODO", true, false, true);
+    defer s2.release();
+    waitDone(s2);
+    const l2 = try s2.snapshot(a);
+    defer l2.deinit(a);
+    try testing.expectEqual(@as(usize, 2), l2.entries.len);
 }

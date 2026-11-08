@@ -15,6 +15,9 @@ pub const Kind = enum { folder, image, video, audio, document, pdf, archive, cod
 
 pub const Query = struct {
     text: []const u8 = "", // the name pattern (into the caller's buffer)
+    // Text to find inside the files, typed after a '$' ("*.md$TODO"); "" for none
+    // (into the caller's buffer). A '\$' is a '$' of the name or the text itself.
+    content: []const u8 = "",
     kind: ?Kind = null,
     tag: tags.Mask = 0, // a tag's bit; 0 = any
     modified: Range = .{}, // seconds since the epoch
@@ -135,9 +138,24 @@ pub fn parse(raw: []const u8, buf: []u8) Query {
 }
 
 /// parseAt is parse with "now" given (the rules' relative dates count back from it).
-pub fn parseAt(raw: []const u8, buf: []u8, now: i64) Query {
+pub fn parseAt(raw_all: []const u8, buf: []u8, now: i64) Query {
     var q: Query = .{};
+    // "name$text": the name part, and what to find inside the files.
+    const cut = contentSplit(raw_all);
+    const raw = raw_all[0..cut];
     var n: usize = 0;
+    if (cut < raw_all.len) {
+        // The text goes at the end of buf, unescaped; the name's words before it.
+        const text = std.mem.trim(u8, raw_all[cut + 1 ..], " ");
+        var tmp: [256]u8 = undefined;
+        const un = unescape(&tmp, text);
+        if (un.len > 0 and un.len < buf.len / 2) {
+            const at = buf.len - un.len;
+            @memcpy(buf[at..], un);
+            q.content = buf[at..];
+        }
+    }
+    const name_cap = buf.len - q.content.len;
     var it = std.mem.tokenizeScalar(u8, raw, ' ');
     while (it.next()) |word| {
         if (filterValue(word, "kind:")) |v| if (kindNamed(v)) |k| {
@@ -149,16 +167,61 @@ pub fn parseAt(raw: []const u8, buf: []u8, now: i64) Query {
             continue;
         };
         if (Rule.ofWord(word)) |r| if (applyRule(&q, r, now)) continue;
-        if (n > 0 and n < buf.len) {
+        if (n > 0 and n < name_cap) {
             buf[n] = ' ';
             n += 1;
         }
-        const take = @min(word.len, buf.len - n);
-        @memcpy(buf[n..][0..take], word[0..take]);
+        var wb: [256]u8 = undefined;
+        const w = unescape(&wb, word);
+        const take = @min(w.len, name_cap - n);
+        @memcpy(buf[n..][0..take], w[0..take]);
         n += take;
     }
     q.text = buf[0..n];
     return q;
+}
+
+/// contentSplit is where the first unescaped '$' is (the name ends, the text to
+/// find inside the files begins), or raw.len when there's none.
+pub fn contentSplit(raw: []const u8) usize {
+    var i: usize = 0;
+    while (i < raw.len) : (i += 1) {
+        if (raw[i] == '\\' and i + 1 < raw.len and raw[i + 1] == '$') {
+            i += 1; // an escaped one: part of the name
+            continue;
+        }
+        if (raw[i] == '$') return i;
+    }
+    return raw.len;
+}
+
+/// hasContent reports whether a query finds text inside files ("…$text").
+pub fn hasContent(raw: []const u8) bool {
+    const cut = contentSplit(raw);
+    return cut < raw.len and std.mem.trim(u8, raw[cut + 1 ..], " ").len > 0;
+}
+
+fn unescape(buf: []u8, s: []const u8) []const u8 {
+    var n: usize = 0;
+    var i: usize = 0;
+    while (i < s.len and n < buf.len) : (i += 1) {
+        if (s[i] == '\\' and i + 1 < s.len and s[i + 1] == '$') i += 1;
+        buf[n] = s[i];
+        n += 1;
+    }
+    return buf[0..n];
+}
+
+/// indexOfCase finds `needle` in `hay`, ignoring ASCII case when `ci`.
+pub fn indexOfCase(hay: []const u8, needle: []const u8, ci: bool) ?usize {
+    if (!ci) return std.mem.indexOf(u8, hay, needle);
+    if (needle.len == 0) return 0;
+    if (hay.len < needle.len) return null;
+    var i: usize = 0;
+    while (i + needle.len <= hay.len) : (i += 1) {
+        if (std.ascii.eqlIgnoreCase(hay[i..][0..needle.len], needle)) return i;
+    }
+    return null;
 }
 
 /// applyRule narrows `q` by rule `r`; false when its value doesn't read (then the word
@@ -306,4 +369,29 @@ test "rules narrow by date and size" {
     var wb: [32]u8 = undefined;
     try testing.expectEqualStrings("created:<2w", r.write(&wb));
     try testing.expectEqual(Rule.Op.before, Rule.ofWord("modified:<2026-01-01").?.op);
+}
+
+test "a $ splits the name from the text to find inside the files" {
+    var buf: [512]u8 = undefined;
+    const q = parseAt("*.md$TODO list", &buf, 0);
+    try std.testing.expectEqualStrings("*.md", q.text);
+    try std.testing.expectEqualStrings("TODO list", q.content);
+    var b2: [512]u8 = undefined;
+    const only = parseAt("$budget", &b2, 0);
+    try std.testing.expectEqualStrings("", only.text);
+    try std.testing.expectEqualStrings("budget", only.content);
+    var b3: [512]u8 = undefined;
+    const lit = parseAt("\\$RECYCLE", &b3, 0);
+    try std.testing.expectEqualStrings("$RECYCLE", lit.text);
+    try std.testing.expectEqualStrings("", lit.content);
+    var b4: [512]u8 = undefined;
+    const filt = parseAt("kind:document report$budget", &b4, 0);
+    try std.testing.expectEqual(Kind.document, filt.kind.?);
+    try std.testing.expectEqualStrings("report", filt.text);
+    try std.testing.expectEqualStrings("budget", filt.content);
+    try std.testing.expect(hasContent("x$y"));
+    try std.testing.expect(!hasContent("x$ "));
+    try std.testing.expect(!hasContent("\\$x"));
+    try std.testing.expectEqual(@as(?usize, 4), indexOfCase("say TODO now", "todo", true));
+    try std.testing.expect(indexOfCase("say TODO now", "todo", false) == null);
 }
