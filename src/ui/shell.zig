@@ -5399,6 +5399,9 @@ pub const Shell = struct {
 
     fn drawResizeGrips(self: *Shell) void {
         if (c.glfwGetWindowAttrib(self.glfwWin(), c.GLFW_MAXIMIZED) != 0) return;
+        // Only the window's own edge: not where something lies over it (Quick Look, a
+        // menu, a dialog), whose clicks are its own.
+        if (!c.igIsWindowHovered(c.ImGuiHoveredFlags_RootAndChildWindows | c.ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)) return;
         const vp = c.igGetMainViewport();
         const p = vp.*.WorkPos; // the window sits at WorkPos/WorkSize, not Pos/Size
         const s = vp.*.WorkSize;
