@@ -40,6 +40,7 @@ pub const archives = @import("archives.zig");
 pub const arcfs = @import("arcfs.zig");
 pub const mediainfo = @import("mediainfo.zig");
 pub const nanorc = @import("nanorc.zig");
+pub const markdown = @import("markdown.zig");
 pub const rclone = @import("rclone.zig");
 pub const rcd = @import("rcd.zig");
 pub const sshconfig = @import("sshconfig.zig");
@@ -69,6 +70,7 @@ test {
     _ = arcfs;
     _ = mediainfo;
     _ = nanorc;
+    _ = markdown;
     _ = scanner;
     _ = selection;
     _ = clipboard;

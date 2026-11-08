@@ -408,6 +408,58 @@ fn categoryOf(e: core.scan.Entry) PeekFilter {
     return .other; // (archives, programs, anything else)
 }
 
+/// Md is a Markdown text read into blocks, and each block's styled runs.
+const Md = struct {
+    arena: std.heap.ArenaAllocator,
+    blocks: []core.markdown.Block,
+    runs: [][]core.markdown.Run,
+};
+
+fn mdCodeBg() u32 {
+    const t = theme.text();
+    return c.igGetColorU32_Vec4(cimgui.vec4(t.x, t.y, t.z, 0.08));
+}
+
+/// mdFlow lays styled runs out from (left, y), word by word, wrapping at `right`;
+/// returns the y below them. Bold (strong, or `bold` for all: a heading) is the
+/// text drawn twice a pixel apart, the font having no bold face.
+fn mdFlow(dl: *c.ImDrawList, rs: []const core.markdown.Run, left: f32, right: f32, y0: f32, base: c.ImVec4_c, bold: bool) f32 {
+    const lh = c.igGetTextLineHeight();
+    const space = c.igCalcTextSize(" ", null, false, -1).x;
+    var x = left;
+    var y = y0;
+    for (rs) |r| {
+        const col = c.igGetColorU32_Vec4(switch (r.style) {
+            .plain, .strong => base,
+            .em => colourOf(6),
+            .code => colourOf(3),
+            .link => colourOf(4),
+            .image => theme.dim(),
+        });
+        const thick = bold or r.style == .strong;
+        var it = std.mem.splitScalar(u8, r.text, ' ');
+        var lead = true;
+        while (it.next()) |w| {
+            if (!lead and x > left) x += space;
+            lead = false;
+            if (w.len == 0) continue;
+            const ww = c.igCalcTextSize(w.ptr, w.ptr + w.len, false, -1).x;
+            if (x + ww > right and x > left) {
+                x = left;
+                y += lh;
+            }
+            if (c.igIsRectVisible_Vec2(cimgui.vec2(x, y), cimgui.vec2(x + ww + 1, y + lh))) {
+                if (r.style == .code) c.ImDrawList_AddRectFilled(dl, cimgui.vec2(x - 2, y), cimgui.vec2(x + ww + 2, y + lh), mdCodeBg(), 3, 0);
+                c.ImDrawList_AddText_Vec2(dl, cimgui.vec2(x, y), col, w.ptr, w.ptr + w.len);
+                if (thick) c.ImDrawList_AddText_Vec2(dl, cimgui.vec2(x + 1, y), col, w.ptr, w.ptr + w.len);
+                if (r.style == .link) c.ImDrawList_AddLine(dl, cimgui.vec2(x, y + lh - 1), cimgui.vec2(x + ww, y + lh - 1), col, 1);
+            }
+            x += ww;
+        }
+    }
+    return y + lh;
+}
+
 /// colourOf is a nano colour as it reads on ZFD's theme: softer than a terminal's,
 /// darker on a light background.
 fn colourOf(col: core.nanorc.Colour) c.ImVec4_c {
@@ -451,6 +503,7 @@ pub const View = struct {
     // own preview (a View of its own) is shown beside the list.
     listing: ?core.scan.Listing = null,
     spans: ?[]core.nanorc.Span = null, // the text's syntax colours (owned; null: plain)
+    md: ?Md = null, // a Markdown text, read into blocks (on its first draw)
     line_starts: std.ArrayList(u32) = .empty, // where each of the text's lines starts (coloured text; c_allocator)
     peek_filter: PeekFilter = .all,
     peek_order: std.ArrayList(usize) = .empty,
@@ -487,6 +540,8 @@ pub const View = struct {
         self.listing = null;
         if (self.spans) |sp| alloc.free(sp);
         self.spans = null;
+        if (self.md) |*m| m.arena.deinit();
+        self.md = null;
         self.line_starts.clearRetainingCapacity();
         self.peek_order.clearRetainingCapacity();
         self.peek_sel = 0;
@@ -800,7 +855,8 @@ pub const View = struct {
     pub fn drawPreview(self: *View, size: c.ImVec2_c, zoom: ?*Zoom) ?Enter {
         var enter: ?Enter = null;
         // Coloured text (code) isn't wrapped: it scrolls sideways too.
-        const flags: c.ImGuiWindowFlags = if (self.text == null or self.is_message) c.ImGuiWindowFlags_NoScrollbar else if (self.spans != null) c.ImGuiWindowFlags_HorizontalScrollbar else 0;
+        const md_file = core.markdown.isMarkdown(self.path.items);
+        const flags: c.ImGuiWindowFlags = if (self.text == null or self.is_message) c.ImGuiWindowFlags_NoScrollbar else if (self.spans != null and !md_file) c.ImGuiWindowFlags_HorizontalScrollbar else 0;
         _ = c.igBeginChild_Str("##qlpreview", size, 0, flags);
         defer c.igEndChild();
         if (self.path.items.len == 0) {
@@ -814,6 +870,8 @@ pub const View = struct {
                 if (drawFolder(t)) |hit| enter = .{ .path = self.path.items, .select = if (hit.len > 0) hit else null };
             } else if (self.is_message) {
                 centeredText(t);
+            } else if (md_file) {
+                self.drawMarkdown(t);
             } else if (self.spans) |sp| {
                 self.drawColoured(t, sp);
             } else {
@@ -824,6 +882,104 @@ pub const View = struct {
             }
         }
         return enter;
+    }
+
+    /// drawMarkdown draws a Markdown text as it reads: headings sized, lists marked,
+    /// quotes barred, code boxed, strong / emphasis / code / links styled, wrapped
+    /// at the edge. Laid out by hand (ImGui has no rich text); only what's in view
+    /// is drawn.
+    fn drawMarkdown(self: *View, t: []const u8) void {
+        if (self.md == null) {
+            var arena: std.heap.ArenaAllocator = .init(std.heap.c_allocator);
+            const a = arena.allocator();
+            const bs = core.markdown.blocks(a, t) catch {
+                arena.deinit();
+                return cimgui.textUnformatted(t);
+            };
+            const rs = a.alloc([]core.markdown.Run, bs.len) catch {
+                arena.deinit();
+                return cimgui.textUnformatted(t);
+            };
+            for (bs, rs) |b, *r| r.* = switch (b.kind) {
+                .heading, .paragraph, .item, .quote => core.markdown.runs(a, b.text) catch &.{},
+                else => &.{},
+            };
+            self.md = .{ .arena = arena, .blocks = bs, .runs = rs };
+        }
+        const md = &self.md.?;
+        const dl = c.igGetWindowDrawList();
+        const o = c.igGetCursorScreenPos();
+        const width = @max(c.igGetContentRegionAvail().x, 60);
+        const right = o.x + width;
+        const lh = c.igGetTextLineHeight();
+        var y = o.y;
+        var first = true;
+        for (md.blocks, md.runs) |b, rs| {
+            if (b.kind == .blank) continue;
+            if (!first) y += lh * 0.55; // between blocks
+            first = false;
+            switch (b.kind) {
+                .blank => {},
+                .rule => {
+                    y += lh * 0.4;
+                    c.ImDrawList_AddLine(dl, cimgui.vec2(o.x, y), cimgui.vec2(right, y), c.igGetColorU32_Vec4(theme.dim()), 1);
+                    y += lh * 0.4;
+                },
+                .heading => {
+                    const k: f32 = switch (b.level) {
+                        1 => 1.6,
+                        2 => 1.35,
+                        3 => 1.15,
+                        else => 1.0,
+                    };
+                    y += lh * 0.3;
+                    cimgui.pushFontTimes(k);
+                    y = mdFlow(dl, rs, o.x, right, y, theme.text(), true);
+                    c.igPopFont();
+                    if (b.level <= 2) {
+                        y += 3;
+                        c.ImDrawList_AddLine(dl, cimgui.vec2(o.x, y), cimgui.vec2(right, y), c.igGetColorU32_Vec4(theme.dim()), 1);
+                        y += 2;
+                    }
+                },
+                .paragraph => y = mdFlow(dl, rs, o.x, right, y, theme.text(), false),
+                .item => {
+                    const in = o.x + lh * 1.3 * @as(f32, @floatFromInt(@as(u32, b.level) + 1));
+                    const col = c.igGetColorU32_Vec4(theme.text());
+                    if (b.number == 0) {
+                        c.ImDrawList_AddCircleFilled(dl, cimgui.vec2(in - lh * 0.6, y + lh * 0.5), lh * 0.14, col, 12);
+                    } else {
+                        var nb: [16]u8 = undefined;
+                        const n = std.fmt.bufPrint(&nb, "{d}.", .{b.number}) catch "";
+                        const nw = c.igCalcTextSize(n.ptr, n.ptr + n.len, false, -1).x;
+                        c.ImDrawList_AddText_Vec2(dl, cimgui.vec2(in - lh * 0.3 - nw, y), col, n.ptr, n.ptr + n.len);
+                    }
+                    y = mdFlow(dl, rs, in, right, y, theme.text(), false);
+                },
+                .quote => {
+                    const top = y;
+                    y = mdFlow(dl, rs, o.x + lh, right, y, theme.dim(), false);
+                    c.ImDrawList_AddRectFilled(dl, cimgui.vec2(o.x + 2, top), cimgui.vec2(o.x + 5, y), c.igGetColorU32_Vec4(theme.dim()), 0, 0);
+                },
+                .code => {
+                    const pad = lh * 0.45;
+                    var n: f32 = 1;
+                    for (b.text) |ch| n += @floatFromInt(@intFromBool(ch == '\n'));
+                    const h = n * lh + pad * 2;
+                    c.ImDrawList_AddRectFilled(dl, cimgui.vec2(o.x, y), cimgui.vec2(right, y + h), mdCodeBg(), 4, 0);
+                    c.ImDrawList_PushClipRect(dl, cimgui.vec2(o.x, y), cimgui.vec2(right - pad, y + h), true);
+                    var ly = y + pad;
+                    var it = std.mem.splitScalar(u8, b.text, '\n');
+                    while (it.next()) |ln| : (ly += lh) {
+                        if (ln.len > 0 and c.igIsRectVisible_Vec2(cimgui.vec2(o.x, ly), cimgui.vec2(right, ly + lh)))
+                            c.ImDrawList_AddText_Vec2(dl, cimgui.vec2(o.x + pad, ly), c.igGetColorU32_Vec4(colourOf(3)), ln.ptr, ln.ptr + ln.len);
+                    }
+                    c.ImDrawList_PopClipRect(dl);
+                    y += h;
+                },
+            }
+        }
+        c.igDummy(cimgui.vec2(width, y - o.y + lh * 0.5));
     }
 
     /// drawColoured draws a text in its syntax colours, a line at a time (only the
