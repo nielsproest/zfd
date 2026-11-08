@@ -267,7 +267,7 @@ pub const GridView = struct {
             act.rowMenu(b, i);
             c.igEndPopup();
         }
-        if (hovered and c.igIsMouseDoubleClicked_Nil(0)) open_idx.* = i;
+        if (hovered and table.openClicked()) open_idx.* = i;
         if (e.isDir() and hovered and c.igIsMouseClicked_Bool(c.ImGuiMouseButton_Middle, false)) {
             var tbuf: [4200]u8 = undefined;
             if (table.joinPath(&tbuf, b.dir, e.name)) |p| b.requestNewTab(p);

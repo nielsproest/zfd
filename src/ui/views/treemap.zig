@@ -10,6 +10,7 @@ const c = cimgui.c;
 const core = @import("core");
 const scan = core.scan;
 const actions = @import("actions.zig");
+const table = @import("table.zig");
 
 const Browser = core.browser.Browser;
 
@@ -76,7 +77,7 @@ pub fn draw(b: *Browser, act: *actions.ViewActions) void {
             b.sel.click(vi); // shared selection…
             b.sel.requestReveal(); // …and scroll the file list to it
         }
-        if (hovered and c.igIsMouseDoubleClicked_Nil(0)) b.open(e) catch {};
+        if (hovered and table.openClicked()) b.open(e) catch {};
         // Right-click a tile → the SAME context menu as the file list (selecting the
         // tile first if it isn't already), since both views drive one model.
         if (c.igBeginPopupContextItem(null, c.ImGuiPopupFlags_MouseButtonRight)) {

@@ -176,7 +176,7 @@ fn drawCell(b: *Browser, act: *ViewActions, cache: ?*thumbs.Cache, i: usize, pos
         act.rowMenu(b, i);
         c.igEndPopup();
     }
-    if (hovered and c.igIsMouseDoubleClicked_Nil(0)) open_idx.* = i;
+    if (hovered and table.openClicked()) open_idx.* = i;
     if (hovered) {
         if (c.igBeginItemTooltip()) {
             cimgui.textUnformatted(e.name);

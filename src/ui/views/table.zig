@@ -439,7 +439,7 @@ pub const TableView = struct {
                         act.rowMenu(b, i);
                         c.igEndPopup();
                     }
-                    if (c.igIsItemHovered(0) and c.igIsMouseDoubleClicked_Nil(0)) open_idx = i;
+                    if (c.igIsItemHovered(0) and openClicked()) open_idx = i;
                     // Middle-click a folder → open it in a new background tab.
                     if (e.isDir() and c.igIsItemHovered(0) and c.igIsMouseClicked_Bool(c.ImGuiMouseButton_Middle, false)) {
                         var tbuf: [4200]u8 = undefined;
@@ -716,6 +716,12 @@ fn handleNav(b: *Browser, act: *ViewActions) bool {
 /// ends in one (dir == "/" is the case that produced "//name": a path that compares
 /// unequal to the same file reached any other way, so the drop-into-self and
 /// already-in-this-folder guards both missed it).
+/// openClicked is a double-click that opens an item: not one with Ctrl or Shift
+/// held, which are two clicks adding to the selection and taking away again.
+pub fn openClicked() bool {
+    return c.igIsMouseDoubleClicked_Nil(0) and !c.igIsKeyDown_Nil(c.ImGuiMod_Ctrl) and !c.igIsKeyDown_Nil(c.ImGuiMod_Shift);
+}
+
 pub fn joinPath(buf: []u8, dir: []const u8, name: []const u8) ?[]const u8 {
     const d = if (dir.len > 1 and dir[dir.len - 1] == '/') dir[0 .. dir.len - 1] else dir;
     const sep: []const u8 = if (std.mem.endsWith(u8, d, "/")) "" else "/";

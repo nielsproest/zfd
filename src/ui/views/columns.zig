@@ -209,7 +209,7 @@ pub const ColumnsView = struct {
                     act.rowMenu(b, i);
                     c.igEndPopup();
                 }
-                if (c.igIsItemHovered(0) and c.igIsMouseDoubleClicked_Nil(0)) open_idx = i;
+                if (c.igIsItemHovered(0) and table.openClicked()) open_idx = i;
                 if (reveal and i == b.sel.cursor) c.igSetScrollHereY(0.5);
             }
         }
