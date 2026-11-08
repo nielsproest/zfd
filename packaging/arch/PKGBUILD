@@ -22,20 +22,21 @@ arch=('x86_64')
 url="https://github.com/nielsproest/zfd"
 license=('GPL-3.0-or-later')
 # Runtime libs (see `ldd`): GLFW for the window/GL context/input, OpenGL via
-# libglvnd, X11 (we force the GLFW X11 backend and do WM integration in Xlib), and
-# libsystemd (sd-bus) for the --service portal backend. libarchive reads archives
+# libglvnd, and X11 (we force the GLFW X11 backend and do WM integration in Xlib).
+# libsystemd (sd-bus) is opened at run time, not linked: see optdepends. libarchive reads archives
 # in place, to browse them like folders (its bsdtar also does Extract and
 # Compress). Dear ImGui + cimgui are
 # compiled in; Zig links its C++ runtime statically, so no libstdc++
 # depend. xdg-desktop-portal hosts the FileChooser backend we register.
-depends=('glfw' 'libglvnd' 'libx11' 'libxext' 'systemd-libs' 'libarchive' 'xdg-desktop-portal')
-# zig 0.17 builds it; pkgconf resolves pkg-config (glfw3/libsystemd) during the
+depends=('glfw' 'libglvnd' 'libx11' 'libxext' 'libarchive' 'xdg-desktop-portal')
+# zig 0.17 builds it; pkgconf resolves pkg-config (glfw3) during the
 # build. Dear ImGui, cimgui and the translate-c package (build.zig.zon) are
 # fetched into zig-pkg/ on the first build.
-makedepends=('zig' 'pkgconf' 'libxrandr') # libxrandr: glfw3native.h includes Xrandr.h
+makedepends=('zig' 'pkgconf' 'libxrandr' 'systemd-libs') # libxrandr: glfw3native.h includes Xrandr.h; systemd-libs: sd-bus.h
 # Optional CLI tools we shell out to (never linked); each feature hides when its
 # tool is absent, like GoFileDialog's terminalCandidates pattern.
-optdepends=('xdg-utils: open files in their default app (xdg-open)'
+optdepends=('systemd-libs: D-Bus (sd-bus): the file dialog portal backend (--service), notifications, following the system dark mode'
+            'xdg-utils: open files in their default app (xdg-open)'
             'konsole: a terminal for "Open Terminal Here" (or foot/alacritty/kitty/xterm/...)'
             'udisks2: mount, unlock and eject devices from the sidebar'
             'polkit: mount fstab entries that need admin rights (pkexec)'

@@ -59,11 +59,18 @@ const Options = struct {
     current_filter: []const u8 = "", // name of the filter to preselect
 };
 
+/// zfd_sdbus_available: libsystemd could be opened (src/c/sdbus_dl.c).
+extern fn zfd_sdbus_available() bool;
+
 pub fn run(io: std.Io, gpa: std.mem.Allocator) !void {
     g_io = io;
     g_gpa = gpa;
 
     var bus: ?*sd.sd_bus = null;
+    if (!zfd_sdbus_available()) {
+        std.debug.print("zfd --service talks D-Bus through libsystemd, which isn't installed (systemd-libs)\n", .{});
+        return error.NoLibsystemd;
+    }
     if (sd.sd_bus_open_user(&bus) < 0) return error.BusConnect;
     defer _ = sd.sd_bus_flush_close_unref(bus);
 

@@ -44,7 +44,7 @@ pub fn build(b: *std.Build) void {
         .c_source_file = b.path("src/c/sdbus.h"),
         .target = target,
         .optimize = optimize,
-        .link_system_libs = &.{.{ .name = "libsystemd" }},
+        // (the header only: libsystemd is opened at run time, see src/c/sdbus_dl.c)
     });
     const c_x11: Translator = .init(translate_c, .{
         .c_source_file = b.path("src/c/x11.h"),
@@ -79,7 +79,9 @@ pub fn build(b: *std.Build) void {
     exe.root_module.linkSystemLibrary("GL", .{}); // -lGL (glClear etc.)
     exe.root_module.linkSystemLibrary("X11", .{}); // Xlib: CSD move/resize + XDND
     exe.root_module.linkSystemLibrary("Xext", .{}); // XSync: resize in step with the WM
-    exe.root_module.linkSystemLibrary("libsystemd", .{}); // sd-bus: the --service portal backend
+    // sd-bus (the --service portal backend, notifications, the system's dark mode):
+    // libsystemd taken at run time, so systemd-libs is optional.
+    exe.root_module.addCSourceFiles(.{ .files = &.{"src/c/sdbus_dl.c"}, .flags = &.{}, .language = .c });
     b.installArtifact(exe);
 
     // `zig build run [-- args]`
