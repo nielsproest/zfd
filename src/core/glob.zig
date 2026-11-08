@@ -17,44 +17,42 @@
 const std = @import("std");
 
 /// match reports whether `name` matches the shell glob `pattern` in full. When
-/// `ci` is set the comparison is ASCII case-insensitive.
+/// `ci` is set the comparison is ASCII case-insensitive. Rob Pike's matcher (from
+/// Kernighan's "A Regular Expression Matcher"), for globs: `here` walks the
+/// pattern along the name, `star` tries each place a `*` could end.
 pub fn match(pattern: []const u8, name: []const u8, ci: bool) bool {
-    // Iterative two-pointer wildcard match with `*` backtracking: O(len(pattern) *
-    // len(name)) worst case, no recursion, no allocation. `star_p` remembers the
-    // pattern index just after the most recent `*` so we can retry it against a
-    // longer span of `name` when a later literal fails.
-    var p: usize = 0;
-    var s: usize = 0;
-    var star_p: ?usize = null;
-    var star_s: usize = 0;
+    return here(pattern, name, ci) == .yes;
+}
 
-    while (s < name.len) {
-        if (p < pattern.len and pattern[p] == '*') {
-            star_p = p;
-            star_s = s;
-            p += 1;
-        } else if (p < pattern.len) {
-            if (matchOne(pattern, p, name[s], ci)) |next_p| {
-                p = next_p;
-                s += 1;
-            } else if (star_p) |sp| {
-                p = sp + 1;
-                star_s += 1;
-                s = star_s;
-            } else {
-                return false;
-            }
-        } else if (star_p) |sp| {
-            p = sp + 1;
-            star_s += 1;
-            s = star_s;
-        } else {
-            return false;
-        }
+/// Result is a match's outcome. `never` is "no, and no later start will do either":
+/// a `*` further on failed at every place, or the name ran out. An earlier `*`
+/// stops trying then, which keeps "*a*a*a*b" from going exponential.
+const Result = enum { yes, no, never };
+
+/// here matches `p` against the start of `s` (all of it, to the end).
+fn here(p_all: []const u8, s_all: []const u8, ci: bool) Result {
+    var p = p_all;
+    var s = s_all;
+    while (p.len > 0 and p[0] != '*') {
+        if (s.len == 0) return .never;
+        const next = matchOne(p, 0, s[0], ci) orelse return .no;
+        p = p[next..];
+        s = s[1..];
     }
-    // `name` exhausted: any remaining pattern must be all `*` to match.
-    while (p < pattern.len and pattern[p] == '*') p += 1;
-    return p == pattern.len;
+    if (p.len == 0) return if (s.len == 0) .yes else .no;
+    return star(p[1..], s, ci);
+}
+
+/// star: a `*` that took nothing yet, then `p`; the star takes more of `s` until
+/// the rest matches.
+fn star(p: []const u8, s: []const u8, ci: bool) Result {
+    var i: usize = 0;
+    while (i <= s.len) : (i += 1) switch (here(p, s[i..], ci)) {
+        .yes => return .yes,
+        .never => return .never,
+        .no => {},
+    };
+    return .never;
 }
 
 /// quickMatch is the quick-search box rule: a pattern with NO glob metacharacter
@@ -152,8 +150,7 @@ inline fn inRangeFold(lo: u8, hi: u8, ch: u8, ci: bool) bool {
 }
 
 // ---------------------------------------------------------------------------
-// Tests. These mirror the Go glob_test.go cases and add edge coverage; they are
-// the conformance suite the eventual raw-core rewrite must also pass.
+// Tests. These mirror the Go glob_test.go cases and add edge coverage.
 // ---------------------------------------------------------------------------
 const testing = std.testing;
 
@@ -175,6 +172,14 @@ test "star matches any run including empty and crosses slashes" {
     try testing.expect(match("**", "", false));
     try testing.expect(match("", "", false));
     try testing.expect(!match("", "x", false));
+}
+
+test "many stars against a long name that doesn't match: not exponential" {
+    var buf: [300]u8 = undefined;
+    @memset(&buf, 'a');
+    const name: []const u8 = &buf;
+    try testing.expect(!match("*a*a*a*a*a*a*a*a*b", name, false));
+    try testing.expect(match("*a*a*a*a*a*a*a*a*", name, false));
 }
 
 test "question matches exactly one byte" {
