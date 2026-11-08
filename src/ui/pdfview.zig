@@ -449,7 +449,8 @@ pub const PdfDoc = struct {
         const tabs_w = c.igCalcTextSize("Pages", null, false, -1).x + c.igCalcTextSize("Contents", null, false, -1).x + fp * 4 + lh * 1.6;
         // (shown from the start, empty until the pages' sizes come in: the page fitted
         // beside it doesn't then shrink as it appears)
-        const side_w = if (self.side != .none) std.math.clamp(size.x * 0.22, @max(lh * 7, tabs_w), @max(lh * 11, tabs_w)) else 0;
+        _ = tabs_w;
+        const side_w = self.sideWidth(size.x);
         if (side_w > 0) {
             self.drawSide(cimgui.vec2(side_w, size.y));
             c.igSameLine(0, 0);
@@ -677,6 +678,32 @@ pub const PdfDoc = struct {
         // pages alone (a toolbar wider than a narrow view made it pan sideways).
         cimgui.zfd_limit_content(o.x + content[0], o.y + content[1]);
         return true;
+    }
+
+    /// sideShown: the sidebar is out.
+    pub fn sideShown(self: *const PdfDoc) bool {
+        return self.side != .none;
+    }
+
+    /// sideWidth is the sidebar's width in a reader `total` wide (0 when it's hidden):
+    /// about a fifth of the width, but its two tabs' labels always fit.
+    pub fn sideWidth(self: *const PdfDoc, total: f32) f32 {
+        return if (self.side == .none) 0 else barWidth(total);
+    }
+
+    /// barWidth is the sidebar's width in a reader `total` wide, out or not.
+    pub fn barWidth(total: f32) f32 {
+        const lh = c.igGetTextLineHeight();
+        const fp = c.igGetStyle().*.FramePadding.x;
+        const tabs_w = c.igCalcTextSize("Pages", null, false, -1).x + c.igCalcTextSize("Contents", null, false, -1).x + fp * 4 + lh * 1.6;
+        return std.math.clamp(total * 0.22, @max(lh * 7, tabs_w), @max(lh * 11, tabs_w));
+    }
+
+    /// widthFor is how wide the reader must be for `main` beside the sidebar.
+    pub fn widthFor(self: *const PdfDoc, main: f32) f32 {
+        var w = main;
+        for (0..4) |_| w = main + self.sideWidth(w); // (the sidebar's a share of the whole)
+        return @round(w);
     }
 
     /// zoomBy zooms by `k`, keeping the point (mx, my) of the view where it is.

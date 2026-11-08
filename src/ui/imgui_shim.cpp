@@ -161,14 +161,76 @@ static void (*g_vp_orig_create)(ImGuiViewport *) = nullptr;
 // Their framebuffers are transparent, and cleared to transparent, so what ZFD draws
 // rounded in them (Quick Look's corners, a menu's) is rounded on screen too: ImGui
 // itself draws a window that has an OS window to itself square, over opaque black.
+// A press in a window of ours is placed where it happened (x11.zig noted that as X
+// read it) before ImGui takes it: ImGui would put it where the last motion left the
+// pointer, which after the window manager has had the pointer (an edge dragged) is
+// where the last press was, outside the window as it is now (every other edge drag
+// failed). Asking the server where the pointer is instead put a quick hand's press
+// where it had got to by then: a row off.
+extern "C" void ImGui_ImplGlfw_CursorPosCallback(GLFWwindow *window, double x, double y);
+extern "C" bool zfd_press_at(void *glfw_window, double *x, double *y);
+static GLFWmousebuttonfun g_vp_prev_button = nullptr;
+static void zfd_vp_button(GLFWwindow *w, int button, int action, int mods) {
+    double x = 0, y = 0;
+    if (action == GLFW_PRESS && zfd_press_at(w, &x, &y)) ImGui_ImplGlfw_CursorPosCallback(w, x, y);
+    if (g_vp_prev_button) g_vp_prev_button(w, button, action, mods);
+}
+// zfd_press_where_pointer_is puts that in front of `w`'s mouse-button callback
+// (ImGui's: the same for the main window and every other).
+extern "C" void zfd_press_where_pointer_is(GLFWwindow *w) {
+    if (!w) return;
+    GLFWmousebuttonfun prev = glfwSetMouseButtonCallback(w, zfd_vp_button);
+    if (prev && prev != zfd_vp_button) g_vp_prev_button = prev;
+}
 static void zfd_vp_create(ImGuiViewport *vp) {
     glfwWindowHint(GLFW_TRANSPARENT_FRAMEBUFFER, GLFW_TRUE);
     g_vp_orig_create(vp);
     glfwWindowHint(GLFW_TRANSPARENT_FRAMEBUFFER, GLFW_FALSE);
+    zfd_press_where_pointer_is((GLFWwindow *)vp->PlatformHandle);
     if (g_vp_cb && vp->PlatformHandle) g_vp_cb(vp->PlatformHandle, (int)vp->Flags);
 }
+// A viewport's OS window resized (by ImGui, the edge dragged): counted, so the
+// loop draws the next frames whatever they hold. The frame drawn as the resize is
+// asked for can land in the window before the window manager applies it, and be
+// lost with it; skipped as unchanged, the next left the window black.
+static int g_vp_resizes = 0;
+static void (*g_vp_orig_size)(ImGuiViewport *, ImVec2) = nullptr;
+static void zfd_vp_size(ImGuiViewport *vp, ImVec2 size) {
+    g_vp_resizes++;
+    g_vp_orig_size(vp, size);
+}
+extern "C" int zfd_viewport_resizes(void) { return g_vp_resizes; }
+// And when it goes away (flags -1), before the window is destroyed.
+static void (*g_vp_orig_destroy)(ImGuiViewport *) = nullptr;
+static void zfd_vp_destroy(ImGuiViewport *vp) {
+    if (g_vp_cb && vp->PlatformHandle && vp->PlatformWindowCreated) g_vp_cb(vp->PlatformHandle, -1);
+    g_vp_orig_destroy(vp);
+}
+// While the window manager waits on a frame (resize sync), each window's frame is
+// finished before it's said to be ready (the main window's in gui.zig): the swap only
+// queues it, and KWin, told too early, showed the next resize step with the last,
+// smaller picture: black borders the content trailed behind.
+static bool g_vp_finish = false;
+static void (*g_vp_orig_swap)(ImGuiViewport *, void *) = nullptr;
+static void zfd_vp_swap(ImGuiViewport *vp, void *arg) {
+    g_vp_orig_swap(vp, arg);
+    if (g_vp_finish) glFinish(); // (its context is current here)
+}
+extern "C" void zfd_viewports_finish(bool on) { g_vp_finish = on; }
+// And once it's shown (flags -2): GLFW waits for it to be mapped, so the window
+// manager has taken it on by then.
+static void (*g_vp_orig_show)(ImGuiViewport *) = nullptr;
+static void zfd_vp_show(ImGuiViewport *vp) {
+    g_vp_orig_show(vp);
+    if (g_vp_cb && vp->PlatformHandle) g_vp_cb(vp->PlatformHandle, -2);
+}
 static void (*g_vp_orig_render)(ImGuiViewport *, void *) = nullptr;
+// zfd_vp_drawn is told the size each of them is drawn at (resize sync: x11.noteDrawn).
+typedef void (*zfd_drawn_cb)(void *glfw_window, int w, int h);
+static zfd_drawn_cb g_vp_drawn = nullptr;
+extern "C" void zfd_viewports_drawn(zfd_drawn_cb cb) { g_vp_drawn = cb; }
 static void zfd_vp_render(ImGuiViewport *vp, void *arg) {
+    if (g_vp_drawn && vp->PlatformHandle) g_vp_drawn(vp->PlatformHandle, (int)vp->Size.x, (int)vp->Size.y);
     vp->Flags |= ImGuiViewportFlags_NoRendererClear; // (the backend's clear is opaque black)
     glClearColor(0, 0, 0, 0);
     glClear(GL_COLOR_BUFFER_BIT);
@@ -182,6 +244,22 @@ extern "C" void zfd_hook_viewport_windows(zfd_viewport_cb cb) {
     if (pio.Renderer_RenderWindow) {
         g_vp_orig_render = pio.Renderer_RenderWindow;
         pio.Renderer_RenderWindow = zfd_vp_render;
+    }
+    if (pio.Platform_ShowWindow) {
+        g_vp_orig_show = pio.Platform_ShowWindow;
+        pio.Platform_ShowWindow = zfd_vp_show;
+    }
+    if (pio.Platform_DestroyWindow) {
+        g_vp_orig_destroy = pio.Platform_DestroyWindow;
+        pio.Platform_DestroyWindow = zfd_vp_destroy;
+    }
+    if (pio.Platform_SwapBuffers) {
+        g_vp_orig_swap = pio.Platform_SwapBuffers;
+        pio.Platform_SwapBuffers = zfd_vp_swap;
+    }
+    if (pio.Platform_SetWindowSize) {
+        g_vp_orig_size = pio.Platform_SetWindowSize;
+        pio.Platform_SetWindowSize = zfd_vp_size;
     }
     g_vp_cb = cb;
 }
@@ -260,10 +338,68 @@ extern "C" uint64_t zfd_frame_hash(int fb_w, int fb_h) {
     return h ? h : 1;
 }
 
+// zfd_update_cursors, after the GLFW backend's NewFrame, puts the cursor ImGui
+// asked for last frame on each of its OS windows. The backend keeps one "last
+// cursor" for all of them, so a change reached the first (the main window) and
+// the others (Quick Look) never showed a resize arrow at their edges.
+extern "C" void zfd_update_cursors(void) {
+    static GLFWcursor *cur[ImGuiMouseCursor_COUNT] = {};
+    static bool made = false;
+    if (!made) {
+        ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange; // (ours, not the backend's)
+        GLFWerrorfun prev = glfwSetErrorCallback(nullptr); // (a missing shape: the arrow)
+        cur[ImGuiMouseCursor_Arrow] = glfwCreateStandardCursor(GLFW_ARROW_CURSOR);
+        cur[ImGuiMouseCursor_TextInput] = glfwCreateStandardCursor(GLFW_IBEAM_CURSOR);
+        cur[ImGuiMouseCursor_ResizeAll] = glfwCreateStandardCursor(GLFW_RESIZE_ALL_CURSOR);
+        cur[ImGuiMouseCursor_ResizeNS] = glfwCreateStandardCursor(GLFW_VRESIZE_CURSOR);
+        cur[ImGuiMouseCursor_ResizeEW] = glfwCreateStandardCursor(GLFW_HRESIZE_CURSOR);
+        cur[ImGuiMouseCursor_ResizeNESW] = glfwCreateStandardCursor(GLFW_RESIZE_NESW_CURSOR);
+        cur[ImGuiMouseCursor_ResizeNWSE] = glfwCreateStandardCursor(GLFW_RESIZE_NWSE_CURSOR);
+        cur[ImGuiMouseCursor_Hand] = glfwCreateStandardCursor(GLFW_HAND_CURSOR);
+        cur[ImGuiMouseCursor_NotAllowed] = glfwCreateStandardCursor(GLFW_NOT_ALLOWED_CURSOR);
+        (void)glfwGetError(nullptr);
+        glfwSetErrorCallback(prev);
+        made = true;
+    }
+    ImGuiMouseCursor want = ImGui::GetMouseCursor();
+    GLFWcursor *gc = (want >= 0 && want < ImGuiMouseCursor_COUNT && cur[want]) ? cur[want] : cur[ImGuiMouseCursor_Arrow];
+    struct Set { void *win; GLFWcursor *cursor; };
+    static Set set[16] = {};
+    ImGuiPlatformIO &pio = ImGui::GetPlatformIO();
+    for (Set &s : set) { // (forget closed windows: a new one may get the same address)
+        if (!s.win) continue;
+        bool open = false;
+        for (ImGuiViewport *vp : pio.Viewports) if (vp->PlatformHandle == s.win) open = true;
+        if (!open) s = {};
+    }
+    for (ImGuiViewport *vp : pio.Viewports) {
+        GLFWwindow *w = (GLFWwindow *)vp->PlatformHandle;
+        if (!w) continue;
+        Set *s = nullptr;
+        for (Set &e : set) if (e.win == w) { s = &e; break; }
+        if (!s) for (Set &e : set) if (!e.win) { e = {w, nullptr}; s = &e; break; }
+        if (s && s->cursor == gc) continue;
+        glfwSetCursor(w, gc);
+        if (s) s->cursor = gc;
+    }
+}
+
 // zfd_limit_content caps the current window's content (what it scrolls over) at the
 // screen position (x, y): overlays drawn as items past it don't count.
 extern "C" void zfd_limit_content(float x, float y) {
     ImGuiWindow *w = ImGui::GetCurrentWindow();
     w->DC.CursorMaxPos.x = ImMin(w->DC.CursorMaxPos.x, x);
     w->DC.CursorMaxPos.y = ImMin(w->DC.CursorMaxPos.y, y);
+}
+
+// zfd_next_window_class: the next window always has an OS window of its own, never
+// merged into the main one when it lies over it (inside it, ImGui resized it itself
+// and switched it to a window of its own mid-drag, blinking out); `taskbar`: with an
+// entry of its own in the taskbar (onViewportWindow sees the flag).
+extern "C" void zfd_next_window_class(bool taskbar) {
+    ImGuiWindowClass wc;
+    wc.ViewportFlagsOverrideSet = ImGuiViewportFlags_NoAutoMerge;
+    if (taskbar) wc.ViewportFlagsOverrideClear = ImGuiViewportFlags_NoTaskBarIcon;
+    else wc.ViewportFlagsOverrideSet |= ImGuiViewportFlags_NoTaskBarIcon;
+    ImGui::SetNextWindowClass(&wc);
 }

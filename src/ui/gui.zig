@@ -352,7 +352,13 @@ fn startupId(buf: []u8) ?[]const u8 {
     return x11.newStartupId(g_main_window, buf);
 }
 
+fn onViewportDrawn(w: ?*anyopaque, width: c_int, height: c_int) callconv(.c) void {
+    x11.noteDrawn(w, width, height);
+}
+
 fn onViewportWindow(w: ?*anyopaque, flags: c_int) callconv(.c) void {
+    if (flags == -1) return x11.disableResizeSync(w); // (going away)
+    if (flags == -2) return x11.dropAttention(w); // (shown)
     // Tooltips, menus and popups are never to take focus (ImGui marks them so), and
     // the window manager must be told: activating one raised the ZFD window it
     // belongs to, so merely pointing at a window behind brought it forward.
@@ -362,7 +368,12 @@ fn onViewportWindow(w: ?*anyopaque, flags: c_int) callconv(.c) void {
         .not_on_map
     else
         .normal;
-    x11.makeChildWindow(w, g_main_window, focus);
+    // (an entry of its own in the taskbar: a window that asked for one, subwindow.zig)
+    const taskbar = focus != .popup and focus != .tooltip and flags & c.ImGuiViewportFlags_NoTaskBarIcon == 0;
+    x11.makeChildWindow(w, g_main_window, focus, taskbar);
+    // A window of its own (Quick Look, Progress, …) resizes in step with our frames,
+    // as the main window does (see subwindow.zig).
+    if (focus == .normal or focus == .not_on_map) x11.enableResizeSync(w);
     // A window dragged out of the main one (or the tab ghost) gets an OS window of
     // its own. It's shown before it's drawn, and a frame drawn while X is still
     // mapping it can be lost: draw the next few no matter what, or it stays blank
@@ -400,6 +411,7 @@ const Backend = struct {
     window: *c.GLFWwindow,
     transparent: bool, // CSD: the corners outside the rounded window are see-through
     resize_until: f64 = 0, // vsync stays off until then (glfwGetTime), after a resize step
+    vp_resizes: c_int = 0, // zfd_viewport_resizes when last seen
     last_frame: u64 = 0, // the hash of the last frame drawn (0: none): see endFrame
 
     fn init(csd: bool, visible: bool) !Backend {
@@ -441,6 +453,9 @@ const Backend = struct {
         g_main_window = window;
         core.fsops.startup_id = startupId; // programs we open may take focus
         cimgui.zfd_hook_viewport_windows(onViewportWindow);
+        cimgui.zfd_viewports_drawn(onViewportDrawn);
+        x11.watchPresses();
+        cimgui.zfd_press_where_pointer_is(window);
         cimgui.zfd_free_ctrl_tab();
 
         c.glfwWindowHint(c.GLFW_TRANSPARENT_FRAMEBUFFER, 0); // not for ImGui's own windows
@@ -470,10 +485,15 @@ const Backend = struct {
     }
 
     fn beginFrame(self: *Backend) void {
-        _ = self;
         // Events are pumped by glfwWaitEventsTimeout in the loop (idle throttle).
         c.ImGui_ImplOpenGL3_NewFrame();
         c.ImGui_ImplGlfw_NewFrame();
+        // (the size this frame is laid out for: the one ImGui just read, for resize sync)
+        var ww: c_int = 0;
+        var wh: c_int = 0;
+        c.glfwGetWindowSize(self.window, &ww, &wh);
+        x11.noteDrawn(self.window, ww, wh);
+        cimgui.zfd_update_cursors();
         cimgui.zfd_sync_viewports();
         c.igNewFrame();
     }
@@ -483,12 +503,32 @@ const Backend = struct {
         var fb_w: c_int = 0;
         var fb_h: c_int = 0;
         c.glfwGetFramebufferSize(self.window, &fb_w, &fb_h);
+        // Resized since this frame was laid out (the window manager's resize landed
+        // while it was built): it would be drawn into a window of another size, anchored
+        // at the bottom (GL's origin), everything a tick off for a frame. Not shown: the
+        // next one, laid out for the new size, is built straight away.
+        var win_w: c_int = 0;
+        var win_h: c_int = 0;
+        c.glfwGetWindowSize(self.window, &win_w, &win_h);
+        const laid = c.igGetMainViewport().*.Size;
+        if (@abs(laid.x - @as(f32, @floatFromInt(win_w))) > 0.5 or @abs(laid.y - @as(f32, @floatFromInt(win_h))) > 0.5) {
+            c.igUpdatePlatformWindows(); // (windows still open, move and close)
+            c.glfwMakeContextCurrent(self.window);
+            g_redraw = true;
+            return;
+        }
         // ImGui builds every frame from scratch, which is cheap; drawing it (and the
         // swap) is what costs. A frame that comes out the same as the one on screen
         // (the idle heartbeat, the pointer over empty space, a spinner-less wait) isn't
         // drawn again. The WM asking for a redraw, a resize, or a font texture to
         // upload always draws.
         const resizing_now = x11.resizeSyncPending();
+        // (Quick Look resized by its edge: a few frames drawn regardless, see the shim)
+        const vp_resizes = cimgui.zfd_viewport_resizes();
+        if (vp_resizes != self.vp_resizes) {
+            self.vp_resizes = vp_resizes;
+            g_new_window_frames = @max(g_new_window_frames, 4);
+        }
         const h = frameHash(fb_w, fb_h);
         const redraw = g_redraw or g_new_window_frames > 0 or resizing_now or h == null or h.? != self.last_frame;
         g_redraw = false;
@@ -508,6 +548,7 @@ const Backend = struct {
         // Windows dragged outside the main one live in their own OS windows; draw
         // those, then hand the GL context back to the main window.
         c.igUpdatePlatformWindows();
+        cimgui.zfd_viewports_finish(resizing_now); // (each finished before the ack, below)
         c.igRenderPlatformWindowsDefault(null, null);
         c.glfwMakeContextCurrent(self.window);
         // While the WM waits on a resize step it paces the frames itself; vsync on top

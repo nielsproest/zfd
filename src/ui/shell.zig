@@ -21,6 +21,15 @@ const treemap = @import("views/treemap.zig");
 const actions = @import("views/actions.zig");
 const anim = @import("anim.zig");
 const x11 = @import("x11.zig");
+const subwindow = @import("subwindow.zig");
+const chrome = @import("chrome.zig");
+const WinButton = chrome.WinButton;
+const winButton = chrome.winButton;
+const windowButtonWidth = chrome.windowButtonWidth;
+const windowButtonsWidth = chrome.windowButtonsWidth;
+const ellipsize = chrome.ellipsize;
+const monitorAt = chrome.monitorAt;
+const toolbarH = chrome.toolbarH;
 const notify = @import("notify.zig");
 const quicklook = @import("quicklook.zig");
 const pdfview = @import("pdfview.zig");
@@ -191,10 +200,14 @@ pub const Shell = struct {
     preview: quicklook.View = .{}, // what the Preview pane and the Quick Look window show
     show_preview: bool = false, // View > Show Preview (Ctrl+Shift+P): the pane right of the files
     ql_open: bool = false, // the Quick Look window (Space)
-    ql_hovered: bool = false, // the pointer was over it last frame (its Ctrl+scroll zooms the picture)
-    ql_own_window: bool = false, // it had an OS window of its own last frame (not inside the main one)
-    ql_wm_full: bool = false, // the window manager was last asked for full screen (or out of it)
-    ql_wm_handle: ?*anyopaque = null, // ...for this window of its own (GLFW)
+    ql_win: subwindow.SubWindow = .{}, // its window (place, size, full screen, edges)
+    ql_pdf_side: bool = false, // a PDF's sidebar was out last frame (the window grows by it)…
+    ql_pdf_doc: ?*pdfview.PdfDoc = null, // …in this document
+    trash_win: subwindow.SubWindow = .{}, // the Trash window
+    progress_win: subwindow.SubWindow = .{}, // Window > Show Progress
+    settings_win: subwindow.SubWindow = .{},
+    customize_win: subwindow.SubWindow = .{}, // View > Customize Toolbar
+    viewopts_win: subwindow.SubWindow = .{}, // View Options (Ctrl+J)
     // Browsing inside Quick Look (a double-click in a folder's view): what it shows
     // instead of the selected item (owned), and that item's path when it started
     // (owned): picking another item in the window, or closing it, ends it.
@@ -202,13 +215,7 @@ pub const Shell = struct {
     ql_from: ?[]u8 = null,
     ql_fwd: ?[]u8 = null, // where Back stepped out of: Forward goes back in (owned)
     ql_zoom: quicklook.Zoom = .{}, // its picture's zoom (the Preview pane's stays fitted)
-    ql_full: bool = false, // ... filling the screen (its arrows button)
-    ql_rect: [4]f32 = .{ 0, 0, 0, 0 }, // its place before it filled the screen (x, y, w, h)
-    ql_restore: bool = false, // put it back at ql_rect next frame
     ql_opened_at: f64 = 0, // when it was opened (it waits a moment for the content)
-    ql_set: [2]f32 = .{ 0, 0 }, // the size it was last given to fit its content
-    ql_user: ?[2]f32 = null, // the size you dragged it to (kept from then on)
-    ql_now: [4]f32 = .{ 0, 0, 0, 0 }, // where it was last frame (x, y, w, h)
     folder_sizes: bool = false, // View > Show Folder Sizes (files directly inside)
     view_opts_open: bool = false, // View > Show View Options (Ctrl+J)
     progress_open: bool = false, // Window > Show Progress: the operations in a window
@@ -1203,10 +1210,9 @@ pub const Shell = struct {
     /// drawTrashView is the "Open trashcan" window: list trashed items with their
     /// original location, and Restore / Delete each, or Empty Trash.
     fn drawTrashView(self: *Shell) void {
-        if (!self.show_trash) return;
-        c.igSetNextWindowSize(cimgui.vec2(640, 420), c.ImGuiCond_Appearing);
+        if (!self.show_trash) return self.trash_win.hide();
         var open = true;
-        if (c.igBegin("Trash##trashview", &open, c.ImGuiWindowFlags_NoSavedSettings)) {
+        if (self.trash_win.begin(.{ .name = "Trash##trashview", .preferred = .{ 640, 420 } }, &open)) {
             if (c.igButton("Empty Trash", cimgui.vec2(0, 0))) self.trashDo(.empty, null);
             c.igSameLine(0, -1);
             if (c.igButton("Refresh", cimgui.vec2(0, 0))) self.refreshTrash();
@@ -1258,7 +1264,7 @@ pub const Shell = struct {
                 }
             }
         }
-        c.igEnd();
+        self.trash_win.end();
         if (!open) self.show_trash = false;
     }
 
@@ -1946,7 +1952,7 @@ pub const Shell = struct {
             const b = self.activeBrowser();
             self.handleMouseNav(b); // mouse back/forward; works in the dialog too
             // Ctrl+scroll, in the dialog too; over Quick Look it zooms the picture instead.
-            if (!(self.ql_open and self.ql_hovered)) self.handleItemSize(b);
+            if (!(self.ql_open and self.ql_win.hovered)) self.handleItemSize(b);
             // Going anywhere (a place, a tab, the path bar) leaves the Network page.
             if (self.net_page and !std.mem.eql(u8, b.location(), self.net_page_loc[0..self.net_page_loc_len])) self.closeNetworkPage();
 
@@ -2269,7 +2275,7 @@ pub const Shell = struct {
     /// qlFitSize is the size Quick Look takes for what it shows, as macOS sizes it: an
     /// image at its own size (shrunk to fit the screen, never under a minimum), a text
     /// or document a tall page, anything else (a folder, a message) a modest box.
-    fn qlFitSize(self: *Shell, work: [4]f32, chrome: [2]f32) [2]f32 {
+    fn qlFitSize(self: *Shell, work: [4]f32, frame: [2]f32) [2]f32 {
         const fs = c.igGetFontSize();
         const v = &self.preview;
         const max_w = work[2] * 0.85;
@@ -2277,8 +2283,13 @@ pub const Shell = struct {
         const min_w = fs * 24;
         const min_h = fs * 16;
         if (v.tex != 0 and v.tex_w > 0 and v.tex_h > 0) {
-            const s = @min(1.0, @min((max_w - chrome[0]) / v.tex_w, (max_h - chrome[1]) / v.tex_h));
-            return .{ @max(@round(v.tex_w * s + chrome[0]), min_w), @max(@round(v.tex_h * s + chrome[1]), min_h) };
+            // (a PDF's page, and its sidebar beside it when that's out)
+            const doc = v.pdfDoc();
+            const side_room = if (doc) |d| d.widthFor(1000) - 1000 else 0;
+            const s = @min(1.0, @min((max_w - frame[0] - side_room) / v.tex_w, (max_h - frame[1]) / v.tex_h));
+            const page_w = @round(v.tex_w * s);
+            const w = if (doc) |d| d.widthFor(page_w) else page_w;
+            return .{ @max(w + frame[0], min_w), @max(@round(v.tex_h * s + frame[1]), min_h) };
         }
         if (v.text != null and !v.is_message and !v.is_folder)
             return .{ @round(@min(work[2] * 0.6, fs * 60)), @round(max_h) };
@@ -2292,172 +2303,124 @@ pub const Shell = struct {
     /// "Open with …" on the left of its title bar, the name in the middle, full screen
     /// and close on the right as on the main window. The file list keeps the keyboard,
     /// so the arrow keys step through the files and Space closes it; so does Esc. It
-    /// fades in once its content is there (or after a moment).
+    /// appears once its content is there (or after a moment). Its window (place, size,
+    /// full screen, edges, taskbar entry) is a SubWindow's.
     fn drawQuickLook(self: *Shell) void {
         const ready = !self.preview.loading or c.igGetTime() - self.ql_opened_at > 0.3;
         const shown = anim.toward(c.igGetID_Str("##qlshown"), self.ql_open and ready, anim.quick);
-        if (shown < 0.01) {
-            self.ql_hovered = false;
-            self.ql_full = false; // a closed window opens at its own size again
-            self.ql_set = .{ 0, 0 };
-            return;
-        }
+        if (shown < 0.01) return self.ql_win.hide();
         const fs = c.igGetFontSize();
         const vp = c.igGetMainViewport();
         const work = monitorAt(vp.*.Pos.x + vp.*.Size.x * 0.5, vp.*.Pos.y + vp.*.Size.y * 0.5, true);
-        const pad0 = @round(fs * 0.5);
-        const fit = self.qlFitSize(work, .{ pad0 * 2, toolbarH() + pad0 * 4 });
-        if (self.ql_full) {
-            const m = monitorAt(self.ql_rect[0] + self.ql_rect[2] * 0.5, self.ql_rect[1] + self.ql_rect[3] * 0.5, false);
-            c.igSetNextWindowPos(cimgui.vec2(m[0], m[1]), c.ImGuiCond_Always, cimgui.vec2(0, 0));
-            c.igSetNextWindowSize(cimgui.vec2(m[2], m[3]), c.ImGuiCond_Always);
-        } else if (self.ql_restore) {
-            self.ql_restore = false;
-            c.igSetNextWindowPos(cimgui.vec2(self.ql_rect[0], self.ql_rect[1]), c.ImGuiCond_Always, cimgui.vec2(0, 0));
-            c.igSetNextWindowSize(cimgui.vec2(self.ql_rect[2], self.ql_rect[3]), c.ImGuiCond_Always);
-        } else if (self.ql_set[0] == 0) {
-            // Opening: centred on the screen the main window is on, at the size you
-            // last gave it, else fitted to the item.
-            const sz = self.ql_user orelse fit;
-            c.igSetNextWindowPos(cimgui.vec2(work[0] + work[2] * 0.5, work[1] + work[3] * 0.5), c.ImGuiCond_Always, cimgui.vec2(0.5, 0.5));
-            c.igSetNextWindowSize(cimgui.vec2(sz[0], sz[1]), c.ImGuiCond_Always);
-            self.ql_set = sz;
-        } else if (self.ql_user == null and !self.preview.loading and (@abs(fit[0] - self.ql_set[0]) > 1 or @abs(fit[1] - self.ql_set[1]) > 1)) {
-            // Stepping to an item of another shape: refit it, keeping its centre.
-            const r = self.ql_now;
-            c.igSetNextWindowPos(cimgui.vec2(r[0] + r[2] * 0.5, r[1] + r[3] * 0.5), c.ImGuiCond_Always, cimgui.vec2(0.5, 0.5));
-            c.igSetNextWindowSize(cimgui.vec2(fit[0], fit[1]), c.ImGuiCond_Always);
-            self.ql_set = fit;
-        }
-        c.igSetNextWindowSizeConstraints(cimgui.vec2(fs * 16, fs * 10), cimgui.vec2(std.math.floatMax(f32), std.math.floatMax(f32)), null, null);
-        // Fades in and out, drawn in the main window. In a window of its own, not:
-        // ImGui hands the fade to the window's opacity, and the window manager
-        // animates the window appearing too, so it seemed to animate twice.
-        c.igPushStyleVar_Float(c.ImGuiStyleVar_Alpha, if (self.ql_own_window) 1 else shown);
-        c.igPushStyleVar_Vec2(c.ImGuiStyleVar_WindowPadding, cimgui.vec2(0, 0));
-        c.igPushStyleVar_Float(c.ImGuiStyleVar_WindowRounding, if (self.ql_full) 0 else 10);
-        // Its background and edge are drawn here, rounded (below): ImGui draws a window
-        // that has an OS window to itself square, whatever the rounding, and makes its
-        // background opaque even when it's set see-through, so it draws none at all.
-        c.igPushStyleVar_Float(c.ImGuiStyleVar_WindowBorderSize, 0);
-        var flags: c.ImGuiWindowFlags = c.ImGuiWindowFlags_NoTitleBar | c.ImGuiWindowFlags_NoBackground | c.ImGuiWindowFlags_NoCollapse | c.ImGuiWindowFlags_NoSavedSettings |
-            c.ImGuiWindowFlags_NoDocking | c.ImGuiWindowFlags_NoScrollbar | c.ImGuiWindowFlags_NoFocusOnAppearing;
-        if (self.ql_full) flags |= c.ImGuiWindowFlags_NoMove | c.ImGuiWindowFlags_NoResize;
-        const open = c.igBegin("Quick Look###quicklook", null, flags);
-        c.igPopStyleVar(4);
-        defer c.igEnd();
-        self.ql_hovered = open and c.igIsWindowHovered(c.ImGuiHoveredFlags_RootAndChildWindows);
-        self.ql_own_window = c.igGetWindowViewport() != c.igGetMainViewport();
-        // Full screen is the window manager's (over the panels), for its own window;
-        // asked for whenever that changes (and when its window is new).
-        if (self.ql_own_window) {
-            const handle = c.igGetWindowViewport().*.PlatformHandle;
-            if (handle != null and (self.ql_full != self.ql_wm_full or handle != self.ql_wm_handle)) {
-                x11.setFullscreen(handle, self.ql_full);
-                self.ql_wm_full = self.ql_full;
-                self.ql_wm_handle = handle;
-            }
-        } else self.ql_wm_handle = null;
+        const pad = @round(fs * 0.5);
+        const bar_h = toolbarH() + pad * 2;
+        const b = self.activeBrowser();
+        const has = b.count() > 0 and b.sel.cursor < b.count(); // (the item on screen, loading or not)
+        // Its title (the taskbar's too) is the item's name.
+        var nb: [600]u8 = undefined;
+        const item_name = if (self.ql_path) |p| std.fs.path.basename(p) else if (has) std.fs.path.basename(b.at(b.sel.cursor).name) else "Quick Look";
+        const name = std.mem.printSentinel(&nb, "{s}###quicklook", .{item_name}, 0) catch "Quick Look###quicklook";
+        // Sized to its item until you resize it yourself (not refitted mid-load: to the
+        // last item's shape).
+        const fit = self.qlFitSize(work, .{ pad * 2, toolbarH() + pad * 4 });
+        // A PDF's sidebar coming out (or going): the window grows by it to the left
+        // (shrinks), so the page stays where it is: to its fitted size, or by the
+        // sidebar's width when you've sized it yourself.
+        const doc = self.preview.pdfDoc();
+        const side_now = if (doc) |d| d.sideShown() else false;
+        if (doc) |d| if (doc == self.ql_pdf_doc and side_now != self.ql_pdf_side and self.ql_win.opened) {
+            const body_w = self.ql_win.rect[2] - pad * 2;
+            const by_side = if (side_now) d.widthFor(body_w) - body_w else -pdfview.PdfDoc.barWidth(body_w);
+            self.ql_win.growLeft(if (self.ql_win.user == null) fit[0] - self.ql_win.rect[2] else by_side);
+        };
+        self.ql_pdf_side = side_now;
+        self.ql_pdf_doc = doc; // (another document is fitted, not grown)
+        defer self.ql_win.end();
+        const open = self.ql_win.begin(.{
+            .name = name,
+            .taskbar = true,
+            .frameless = true,
+            .focus_on_appear = false, // (the file list keeps the keyboard)
+            .preferred = fit,
+            .refit = !self.preview.loading,
+            .fit_after_full = true,
+            .centre_in = work,
+            .min = .{ fs * 16, fs * 10 },
+            .flags = c.ImGuiWindowFlags_NoScrollbar,
+        }, &self.ql_open); // (closed from outside too: its taskbar entry's Close)
         if (!open) return;
         // Escape leaves full screen first, as on macOS; then it closes Quick Look.
         if (self.ql_open and c.igIsKeyPressed_Bool(c.ImGuiKey_Escape, false) and !cimgui.zfd_want_text_input() and !pdfview.takesEscape()) {
-            if (self.ql_full) {
-                self.ql_full = false;
-                self.ql_restore = true;
-            } else self.ql_open = false;
+            if (self.ql_win.escape()) self.ql_open = false;
         }
 
-        const b = self.activeBrowser();
-        const has = b.count() > 0 and b.sel.cursor < b.count(); // (the item on screen, loading or not)
-        const wp = c.igGetWindowPos();
-        const ws = c.igGetWindowSize();
-        self.ql_now = .{ wp.x, wp.y, ws.x, ws.y };
-        // Resized by hand: that size sticks (for this item and the next ones).
-        if (!self.ql_full and !self.ql_restore and c.igIsWindowFocused(0) and c.igIsMouseDown_Nil(0) and
-            (@abs(ws.x - self.ql_set[0]) > 1 or @abs(ws.y - self.ql_set[1]) > 1))
-        {
-            self.ql_user = .{ ws.x, ws.y };
-            self.ql_set = self.ql_user.?;
-        }
-        const pal = theme.p();
-        const dl = c.igGetWindowDrawList();
-        const round: f32 = if (self.ql_full) 0 else 10;
-        // The window itself: rounded, with a hairline edge.
-        c.ImDrawList_AddRectFilled(dl, wp, cimgui.vec2(wp.x + ws.x, wp.y + ws.y), c.igGetColorU32_Vec4(pal.content_bg), round, 0);
-        defer if (!self.ql_full) c.ImDrawList_AddRect(dl, cimgui.vec2(wp.x + 0.5, wp.y + 0.5), cimgui.vec2(wp.x + ws.x - 0.5, wp.y + ws.y - 0.5), c.igGetColorU32_Vec4(pal.separator), round, 1, 0); // rounding, thickness, flags (on top of it all)
+        const r = self.ql_win.rect;
+        const wp = cimgui.vec2(r[0], r[1]);
+        const ws = cimgui.vec2(r[2], r[3]);
+        self.ql_win.background();
 
-        // The title bar: the toolbar's shade with a hairline under it, as in Finder.
-        const pad = @round(fs * 0.5);
-        const bar_h = toolbarH() + pad * 2;
-        c.ImDrawList_AddRectFilled(dl, wp, cimgui.vec2(wp.x + ws.x, wp.y + bar_h), c.igGetColorU32_Vec4(pal.toolbar_bg), round, c.ImDrawFlags_RoundCornersTop);
-        c.ImDrawList_AddLine(dl, cimgui.vec2(wp.x, wp.y + bar_h), cimgui.vec2(wp.x + ws.x, wp.y + bar_h), c.igGetColorU32_Vec4(pal.toolbar_line), 1);
-        // Full screen and close on the right, the same buttons as the main window's;
-        // "Open with <app>" on the left, the name centred in what's left.
-        const wb_w = windowButtonWidth();
-        const wb_h = toolbarH();
-        c.igSetCursorScreenPos(cimgui.vec2(wp.x + ws.x - pad - wb_w * 2, wp.y + pad));
-        const bar_bg = c.igGetColorU32_Vec4(pal.toolbar_bg);
-        if (winButton(if (self.ql_full) .restore else .maximize, wb_h, if (self.ql_full) "Exit Full Screen" else "Full Screen", bar_bg)) {
-            if (!self.ql_full) self.ql_rect = .{ wp.x, wp.y, ws.x, ws.y } else self.ql_restore = true;
-            self.ql_full = !self.ql_full;
-        }
-        c.igSameLine(0, 0);
-        c.igPushID_Str("##qlclose");
-        if (winButton(.close, wb_h, "Close (Space)", bar_bg)) self.ql_open = false;
-        c.igPopID();
-        var right = wp.x + ws.x - pad - wb_w * 2;
-        // Rotate, for a picture (as macOS's Quick Look has them), left of those; a
-        // PDF's pages turn in the view (the file stays as it is).
-        const browsing = self.ql_path != null;
-        const pdf_doc = self.preview.pdfDoc();
-        if (pdf_doc != null or (has and !browsing and self.canRotate(b) and self.ffmpeg_path != null)) {
-            const tbw = @round(toolbarH() * 1.2);
-            right -= tbw * 2 + fs * 0.4;
-            c.igSetCursorScreenPos(cimgui.vec2(right, wp.y + pad));
-            if (toolButton("##qlrotl", .rotate_left, true, false, "Rotate Left")) {
-                if (pdf_doc) |d| d.rotate(false) else self.runImageAction(b, self.ffmpeg_path.?, .{ .rotate = false });
-            }
-            c.igSameLine(0, 0);
-            if (toolButton("##qlrotr", .rotate_right, true, false, "Rotate Right")) {
-                if (pdf_doc) |d| d.rotate(true) else self.runImageAction(b, self.ffmpeg_path.?, .{ .rotate = true });
-            }
-        }
-        var left_end = wp.x + pad;
-        var ob: [160]u8 = undefined;
-        // Browsed into something: a back button first, out to where it came from.
-        if (browsing) {
-            c.igSetCursorScreenPos(cimgui.vec2(left_end, wp.y + pad));
-            if (toolButton("##qlback", .back, true, false, "Back")) self.qlBack();
-            left_end += @round(toolbarH() * 1.2) + fs * 0.3;
-        }
-        if (has and !browsing and !b.at(b.sel.cursor).isDir()) {
-            const app = b.opensWith(b.at(b.sel.cursor).name);
-            const label = (if (app.len > 0) std.mem.printSentinel(&ob, "Open with {s}##qlopen", .{app}, 0) else std.mem.printSentinel(&ob, "Open##qlopen", .{}, 0)) catch "Open##qlopen";
-            const lw = c.igCalcTextSize(label.ptr, null, true, -1).x + c.igGetStyle().*.FramePadding.x * 2;
-            if (left_end + lw < right - fs * 4) {
-                c.igSetCursorScreenPos(cimgui.vec2(left_end, wp.y + pad + (toolbarH() - c.igGetFrameHeight()) * 0.5));
-                if (c.igButton(label.ptr, cimgui.vec2(0, 0)) and !b.loading) b.openCursor() catch {}; // (not mid-load: the path would be the next folder's)
-                left_end += lw;
-            }
-        }
-        if (has) {
-            var tb: [512]u8 = undefined;
-            const span = right - left_end - fs;
-            const title = if (self.ql_path) |p| std.fs.path.basename(p) else std.fs.path.basename(b.at(b.sel.cursor).name);
-            const name = ellipsize(&tb, title, span);
-            const tw = c.igCalcTextSize(name.ptr, null, false, -1).x;
-            // Centred on the window if it fits there, else in the space between.
-            const cx = std.math.clamp(wp.x + (ws.x - tw) * 0.5, left_end + fs * 0.5, @max(right - fs * 0.5 - tw, left_end + fs * 0.5));
-            c.ImDrawList_AddText_Vec2(dl, cimgui.vec2(cx, wp.y + (bar_h - c.igGetTextLineHeight()) * 0.5), c.igGetColorU32_Col(c.ImGuiCol_Text, 1), name.ptr, null);
-        }
-
-        // The preview fills the rest.
-        c.igSetCursorScreenPos(cimgui.vec2(wp.x + pad, wp.y + bar_h + pad));
-        const body = cimgui.vec2(ws.x - pad * 2, @max(ws.y - bar_h - pad * 2, 1));
+        // The preview fills the rest (all of it in full screen, the title bar over it).
+        const top: f32 = if (self.ql_win.full) 0 else bar_h;
+        c.igSetCursorScreenPos(cimgui.vec2(wp.x + pad, wp.y + top + pad));
+        const body = cimgui.vec2(ws.x - pad * 2, @max(ws.y - top - pad * 2, 1));
         const enter = if (self.preview.isFolderView())
             self.preview.drawFolderView(self.io, self.alloc, body, b)
         else
             self.preview.drawPreview(body, &self.ql_zoom);
+
+        // The title bar, over that: full screen and close on the right; "Open with
+        // <app>" on the left, the name centred in what's left.
+        if (self.ql_win.beginTitleBar(bar_h)) {
+            defer self.ql_win.endTitleBar();
+            const dl = c.igGetWindowDrawList();
+            const tb = self.ql_win.titleButtons(pad, "Close (Space)");
+            if (tb.close) self.ql_open = false;
+            var right = tb.left;
+            // Rotate, for a picture (as macOS's Quick Look has them), left of those; a
+            // PDF's pages turn in the view (the file stays as it is).
+            const browsing = self.ql_path != null;
+            const pdf_doc = self.preview.pdfDoc();
+            if (pdf_doc != null or (has and !browsing and self.canRotate(b) and self.ffmpeg_path != null)) {
+                const tbw = @round(toolbarH() * 1.2);
+                right -= tbw * 2 + fs * 0.4;
+                c.igSetCursorScreenPos(cimgui.vec2(right, wp.y + pad));
+                if (toolButton("##qlrotl", .rotate_left, true, false, "Rotate Left")) {
+                    if (pdf_doc) |d| d.rotate(false) else self.runImageAction(b, self.ffmpeg_path.?, .{ .rotate = false });
+                }
+                c.igSameLine(0, 0);
+                if (toolButton("##qlrotr", .rotate_right, true, false, "Rotate Right")) {
+                    if (pdf_doc) |d| d.rotate(true) else self.runImageAction(b, self.ffmpeg_path.?, .{ .rotate = true });
+                }
+            }
+            var left_end = wp.x + pad;
+            var ob: [160]u8 = undefined;
+            // Browsed into something: a back button first, out to where it came from.
+            if (browsing) {
+                c.igSetCursorScreenPos(cimgui.vec2(left_end, wp.y + pad));
+                if (toolButton("##qlback", .back, true, false, "Back")) self.qlBack();
+                left_end += @round(toolbarH() * 1.2) + fs * 0.3;
+            }
+            if (has and !browsing and !b.at(b.sel.cursor).isDir()) {
+                const app = b.opensWith(b.at(b.sel.cursor).name);
+                const label = (if (app.len > 0) std.mem.printSentinel(&ob, "Open with {s}##qlopen", .{app}, 0) else std.mem.printSentinel(&ob, "Open##qlopen", .{}, 0)) catch "Open##qlopen";
+                const lw = c.igCalcTextSize(label.ptr, null, true, -1).x + c.igGetStyle().*.FramePadding.x * 2;
+                if (left_end + lw < right - fs * 4) {
+                    c.igSetCursorScreenPos(cimgui.vec2(left_end, wp.y + pad + (toolbarH() - c.igGetFrameHeight()) * 0.5));
+                    if (c.igButton(label.ptr, cimgui.vec2(0, 0)) and !b.loading) b.openCursor() catch {}; // (not mid-load: the path would be the next folder's)
+                    left_end += lw;
+                }
+            }
+            if (has) {
+                var tbuf: [512]u8 = undefined;
+                const span = right - left_end - fs;
+                const title = ellipsize(&tbuf, item_name, span);
+                const tw = c.igCalcTextSize(title.ptr, null, false, -1).x;
+                // Centred on the window if it fits there, else in the space between.
+                const cx = std.math.clamp(wp.x + (ws.x - tw) * 0.5, left_end + fs * 0.5, @max(right - fs * 0.5 - tw, left_end + fs * 0.5));
+                c.ImDrawList_AddText_Vec2(dl, cimgui.vec2(cx, wp.y + (bar_h - c.igGetTextLineHeight()) * 0.5), c.igGetColorU32_Col(c.ImGuiCol_Text, 1), title.ptr, null);
+            }
+        }
+
         // A double-click in a folder's view stays in Quick Look: it shows that folder,
         // or that file (Back steps out again).
         if (enter) |e| {
@@ -2562,7 +2525,7 @@ pub const Shell = struct {
     /// ring's, in a small window you can leave open (Finder's copy window). It stays
     /// with ZFD's window; it has no taskbar entry of its own.
     fn drawProgressWindow(self: *Shell) void {
-        if (!self.progress_open) return;
+        if (!self.progress_open) return self.progress_win.hide();
         const fs = c.igGetFontSize();
         const vp = c.igGetMainViewport();
         // Bottom-right of the window, placed by its (fixed) width.
@@ -2570,8 +2533,8 @@ pub const Shell = struct {
         // A fixed width, so it doesn't grow sideways (off its corner) as rows come and go.
         c.igSetNextWindowSizeConstraints(cimgui.vec2(fs * 28, 0), cimgui.vec2(fs * 28, 100000), null, null);
         c.igSetNextWindowBgAlpha(1.0);
-        defer c.igEnd();
-        if (!c.igBegin("Progress", &self.progress_open, c.ImGuiWindowFlags_NoCollapse | c.ImGuiWindowFlags_AlwaysAutoResize | c.ImGuiWindowFlags_NoFocusOnAppearing)) return;
+        defer self.progress_win.end();
+        if (!self.progress_win.begin(.{ .name = "Progress", .auto_size = true, .focus_on_appear = false, .flags = c.ImGuiWindowFlags_NoCollapse }, &self.progress_open)) return;
         self.drawOpsRows();
     }
 
@@ -3196,7 +3159,7 @@ pub const Shell = struct {
         const fwd = c.igIsMouseClicked_Bool(4, false);
         // Over Quick Look they step through what it browsed into, not the window
         // behind it (they used to do both).
-        if (self.ql_open and self.ql_hovered) {
+        if (self.ql_open and self.ql_win.hovered) {
             if (back) self.qlBack();
             if (fwd) self.qlForward();
             return;
@@ -4542,7 +4505,7 @@ pub const Shell = struct {
     /// and each page is a two-column form. Changes apply at once and are saved with the
     /// other settings when ZFD closes.
     fn drawSettings(self: *Shell) void {
-        if (!self.settings_open) return;
+        if (!self.settings_open) return self.settings_win.hide();
         const fs = c.igGetFontSize();
         const pages = [_]struct { SettingsPage, [:0]const u8 }{
             .{ .general, "General" },       .{ .tags, "Tags" },         .{ .sidebar, "Sidebar" },
@@ -4554,8 +4517,8 @@ pub const Shell = struct {
         c.igSetNextWindowBgAlpha(1.0);
         var tb: [48]u8 = undefined;
         const title = std.mem.printSentinel(&tb, "{s}###settings", .{pages[@backingInt(page)][1]}, 0) catch "Settings###settings";
-        defer c.igEnd();
-        if (!c.igBegin(title.ptr, &self.settings_open, c.ImGuiWindowFlags_NoCollapse | c.ImGuiWindowFlags_AlwaysAutoResize | c.ImGuiWindowFlags_NoSavedSettings)) return;
+        defer self.settings_win.end();
+        if (!self.settings_win.begin(.{ .name = title, .auto_size = true, .flags = c.ImGuiWindowFlags_NoCollapse }, &self.settings_open)) return;
         if (c.igIsKeyPressed_Bool(c.ImGuiKey_Escape, false) and c.igIsWindowFocused(c.ImGuiFocusedFlags_RootAndChildWindows)) self.settings_open = false;
 
         // The page buttons: icon over label, centred, the current one on a soft pill,
@@ -4785,11 +4748,11 @@ pub const Shell = struct {
     /// drawCustomizeToolbar is View > Customize Toolbar: the toolbar's right-hand items,
     /// ticked to show and dragged into order (a blue line shows where one will land).
     fn drawCustomizeToolbar(self: *Shell) void {
-        if (!self.customize_open) return;
+        if (!self.customize_open) return self.customize_win.hide();
         const vp = c.igGetMainViewport();
         c.igSetNextWindowPos(cimgui.vec2(vp.*.WorkPos.x + vp.*.WorkSize.x * 0.5, vp.*.WorkPos.y + vp.*.WorkSize.y * 0.3), c.ImGuiCond_Appearing, cimgui.vec2(0.5, 0));
-        defer c.igEnd();
-        if (!c.igBegin("Customize Toolbar###customize", &self.customize_open, c.ImGuiWindowFlags_NoCollapse | c.ImGuiWindowFlags_AlwaysAutoResize | c.ImGuiWindowFlags_NoSavedSettings | c.ImGuiWindowFlags_NoDocking)) return;
+        defer self.customize_win.end();
+        if (!self.customize_win.begin(.{ .name = "Customize Toolbar###customize", .auto_size = true, .flags = c.ImGuiWindowFlags_NoCollapse }, &self.customize_open)) return;
         if (c.igIsKeyPressed_Bool(c.ImGuiKey_Escape, false) and c.igIsWindowFocused(0)) self.customize_open = false;
         dimText("Tick what the toolbar shows; drag to reorder.");
         c.igSpacing();
@@ -4869,7 +4832,7 @@ pub const Shell = struct {
     /// how it opens, sorts and groups (remembered for it), the icon size, the list's
     /// columns, and "Use as Defaults" for every folder without a view of its own.
     fn drawViewOptions(self: *Shell) void {
-        if (!self.view_opts_open) return;
+        if (!self.view_opts_open) return self.viewopts_win.hide();
         const b = self.activeBrowser();
         const fs = c.igGetFontSize();
         const vp = c.igGetMainViewport();
@@ -4878,8 +4841,8 @@ pub const Shell = struct {
         var tb: [300]u8 = undefined;
         const name = if (b.in_recent) "Recent" else if (std.mem.eql(u8, b.dir, "/")) "Computer" else std.fs.path.basename(b.dir);
         const title = std.mem.printSentinel(&tb, "{s}###viewopts", .{name}, 0) catch "View Options###viewopts";
-        defer c.igEnd();
-        if (!c.igBegin(title.ptr, &self.view_opts_open, c.ImGuiWindowFlags_NoCollapse | c.ImGuiWindowFlags_AlwaysAutoResize | c.ImGuiWindowFlags_NoSavedSettings | c.ImGuiWindowFlags_NoFocusOnAppearing)) return;
+        defer self.viewopts_win.end();
+        if (!self.viewopts_win.begin(.{ .name = title, .auto_size = true, .focus_on_appear = false, .flags = c.ImGuiWindowFlags_NoCollapse }, &self.view_opts_open)) return;
         if (c.igIsKeyPressed_Bool(c.ImGuiKey_Escape, false) and c.igIsWindowFocused(0)) self.view_opts_open = false;
         const label_w = fs * 7;
         const field_w = fs * 11;
@@ -6035,69 +5998,9 @@ fn drawReadOnly(b: *Browser) void {
     c.igSameLine(0, 0);
 }
 
-fn windowButtonWidth() f32 {
-    return @round(c.igGetFrameHeight() * 1.6);
-}
-const WinButton = enum { minimize, maximize, restore, close };
 
-/// winButton is one of the window's title-bar buttons (minimize, maximize/restore,
-/// close): a glyph that gets a soft box on hover, red for close. `bg` is what's
-/// behind it (the restore glyph's front square is filled with it).
-fn winButton(kind: WinButton, h: f32, tip: [:0]const u8, bg: u32) bool {
-    const w = windowButtonWidth();
-    const dl = c.igGetWindowDrawList();
-    const pal = theme.p();
-    const pos = c.igGetCursorScreenPos();
-    const clicked = c.igInvisibleButton("##winbtn", cimgui.vec2(w, h), 0);
-    const hovered = c.igIsItemHovered(0);
-    const held = c.igIsItemActive();
-    const close = kind == .close;
-    if (hovered) {
-        c.igSetTooltip("%s", tip.ptr);
-        const hb: u32 = if (close) theme.u32c(0xE81123, if (held) 0xCC else 0xFF) else c.igGetColorU32_Vec4(if (pal.dark) cimgui.vec4(1, 1, 1, if (held) 0.18 else 0.1) else cimgui.vec4(0, 0, 0, if (held) 0.14 else 0.07));
-        c.ImDrawList_AddRectFilled(dl, pos, cimgui.vec2(pos.x + w, pos.y + h), hb, 4, 0);
-    }
-    const gc: u32 = if (close and hovered) 0xFFFFFFFF else c.igGetColorU32_Vec4(pal.text);
-    const g = @round(h * 0.34);
-    const cx = @round(pos.x + w * 0.5);
-    const cy = @round(pos.y + h * 0.5);
-    switch (kind) {
-        .minimize => c.ImDrawList_AddLine(dl, cimgui.vec2(cx - g * 0.5, cy + 0.5), cimgui.vec2(cx + g * 0.5, cy + 0.5), gc, 1.2),
-        .maximize => c.ImDrawList_AddRect(dl, cimgui.vec2(cx - g * 0.5, cy - g * 0.5), cimgui.vec2(cx + g * 0.5, cy + g * 0.5), gc, 0, 1.2, 0),
-        .restore => {
-            // Two overlapping squares.
-            const o = g * 0.22;
-            c.ImDrawList_AddRect(dl, cimgui.vec2(cx - g * 0.5 + o, cy - g * 0.5), cimgui.vec2(cx + g * 0.5, cy + g * 0.5 - o), gc, 0, 1.2, 0);
-            if (!hovered) c.ImDrawList_AddRectFilled(dl, cimgui.vec2(cx - g * 0.5, cy - g * 0.5 + o), cimgui.vec2(cx + g * 0.5 - o, cy + g * 0.5), bg, 0, 0);
-            c.ImDrawList_AddRect(dl, cimgui.vec2(cx - g * 0.5, cy - g * 0.5 + o), cimgui.vec2(cx + g * 0.5 - o, cy + g * 0.5), gc, 0, 1.2, 0);
-        },
-        .close => {
-            c.ImDrawList_AddLine(dl, cimgui.vec2(cx - g * 0.5, cy - g * 0.5), cimgui.vec2(cx + g * 0.5, cy + g * 0.5), gc, 1.2);
-            c.ImDrawList_AddLine(dl, cimgui.vec2(cx - g * 0.5, cy + g * 0.5), cimgui.vec2(cx + g * 0.5, cy - g * 0.5), gc, 1.2);
-        },
-    }
-    return clicked;
-}
 
-fn windowButtonsWidth() f32 {
-    return windowButtonWidth() * 3;
-}
 
-/// ellipsize fits `text` into `max_w` at the current font, cutting it short with
-/// "…" (on a UTF-8 boundary) when it's too wide. NUL-terminated into `buf`.
-fn ellipsize(buf: []u8, text: []const u8, max_w: f32) [:0]const u8 {
-    const ell = "\u{2026}";
-    const full = std.mem.printSentinel(buf, "{s}", .{text}, 0) catch return "";
-    if (c.igCalcTextSize(full.ptr, null, false, -1).x <= max_w) return full;
-    var n = @min(text.len, buf.len - ell.len - 1);
-    while (n > 0) {
-        n -= 1;
-        while (n > 0 and (text[n] & 0xC0) == 0x80) n -= 1; // not inside a UTF-8 sequence
-        const z = std.mem.printSentinel(buf, "{s}{s}", .{ text[0..n], ell }, 0) catch return "";
-        if (c.igCalcTextSize(z.ptr, null, false, -1).x <= max_w) return z;
-    }
-    return std.mem.printSentinel(buf, "{s}", .{ell}, 0) catch "";
-}
 
 /// enterFromPreview goes into the folder a preview was clicked in, picking the item
 /// that was clicked (if one was).
@@ -6249,41 +6152,7 @@ fn toolButton(id: [:0]const u8, icon: ToolIcon, enabled: bool, on: bool, tip: [:
     return toolButtonW(id, icon, @round(toolbarH() * 1.2), enabled, on, tip);
 }
 
-/// monitorAt is the screen (x, y, w, h) holding the point x, y: Quick Look fills it.
-/// The first monitor when none does.
-fn monitorAt(x: f32, y: f32, work_area: bool) [4]f32 {
-    var n: c_int = 0;
-    const mons = c.glfwGetMonitors(&n) orelse return .{ 0, 0, 1280, 800 };
-    var best: [4]f32 = .{ 0, 0, 1280, 800 };
-    var i: usize = 0;
-    while (i < @as(usize, @intCast(n))) : (i += 1) {
-        const m = mons[i] orelse continue;
-        var mx: c_int = 0;
-        var my: c_int = 0;
-        c.glfwGetMonitorPos(m, &mx, &my);
-        const mode = c.glfwGetVideoMode(m) orelse continue;
-        const r = [4]f32{ @floatFromInt(mx), @floatFromInt(my), @floatFromInt(mode.*.width), @floatFromInt(mode.*.height) };
-        // The work area leaves out the panels.
-        var wa = r;
-        if (work_area) {
-            var wx: c_int = 0;
-            var wy: c_int = 0;
-            var ww: c_int = 0;
-            var wh: c_int = 0;
-            c.glfwGetMonitorWorkarea(m, &wx, &wy, &ww, &wh);
-            if (ww > 0 and wh > 0) wa = .{ @floatFromInt(wx), @floatFromInt(wy), @floatFromInt(ww), @floatFromInt(wh) };
-        }
-        if (i == 0) best = wa;
-        if (x >= r[0] and x < r[0] + r[2] and y >= r[1] and y < r[1] + r[3]) return wa;
-    }
-    return best;
-}
 
-/// toolbarH is the height of the toolbar's buttons, title and search field: Finder's
-/// are roomier than an ordinary widget.
-fn toolbarH() f32 {
-    return @round(c.igGetFontSize() * 2.1);
-}
 
 /// toolButtonW is toolButton at width `w` (the sort menu's is wider, for its arrow).
 fn toolButtonW(id: [:0]const u8, icon: ToolIcon, w: f32, enabled: bool, on: bool, tip: [:0]const u8) bool {

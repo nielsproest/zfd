@@ -236,6 +236,10 @@ pub fn applyMetrics() void {
     st.*.ChildBorderSize = 1;
     st.*.FrameBorderSize = 0;
     st.*.SeparatorTextBorderSize = 1;
+    // How far either side of a window's edge it resizes from, and shows it (ImGui's
+    // 4 px): a window with an OS window of its own (Quick Look) has only the inner
+    // side, and 4 px of that was hard to find.
+    st.*.WindowBorderHoverPadding = 8;
 }
 
 // --- following the desktop -----------------------------------------------------

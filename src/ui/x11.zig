@@ -738,6 +738,18 @@ pub fn takeMerge(glfw: ?*anyopaque) ?x.Window {
 /// or take it out again: _NET_WM_STATE_FULLSCREEN, which covers the panels. A window
 /// merely sized to the screen stays under them.
 pub fn setFullscreen(glfw: ?*anyopaque, on: bool) void {
+    setState(glfw, "_NET_WM_STATE_FULLSCREEN", on);
+}
+
+/// dropAttention takes back the "demands attention" the window manager gives a
+/// normal window it didn't activate when it appeared (Quick Look, which leaves the
+/// keyboard to the file list): its taskbar entry would flash for nothing.
+pub fn dropAttention(glfw: ?*anyopaque) void {
+    setState(glfw, "_NET_WM_STATE_DEMANDS_ATTENTION", false);
+}
+
+/// setState asks the window manager to add or remove one of a mapped window's states.
+fn setState(glfw: ?*anyopaque, state: [*:0]const u8, on: bool) void {
     const dpy = display() orelse return;
     const w = window(glfw);
     if (w == 0) return;
@@ -747,7 +759,7 @@ pub fn setFullscreen(glfw: ?*anyopaque, on: bool) void {
     ev.xclient.message_type = x.XInternAtom(dpy, "_NET_WM_STATE", 0);
     ev.xclient.format = 32;
     ev.xclient.data.l[0] = if (on) 1 else 0; // _NET_WM_STATE_ADD / _REMOVE
-    ev.xclient.data.l[1] = @intCast(x.XInternAtom(dpy, "_NET_WM_STATE_FULLSCREEN", 0));
+    ev.xclient.data.l[1] = @intCast(x.XInternAtom(dpy, state, 0));
     ev.xclient.data.l[2] = 0;
     ev.xclient.data.l[3] = 1; // from an application
     _ = x.XSendEvent(dpy, x.DefaultRootWindow(dpy), 0, x.SubstructureRedirectMask | x.SubstructureNotifyMask, &ev);
@@ -764,15 +776,21 @@ pub const ChildFocus = enum {
 
 /// makeChildWindow marks `child` (an unmapped GLFW window ImGui opened outside the main
 /// one) as belonging to `parent`: a panel is transient for it, so the window manager keeps it
-/// above, minimizes and restores it with the main window, and no taskbar, pager or
-/// Alt+Tab entry of its own. A window that mustn't take focus says so before it's
-/// mapped: the WM activating it would raise `parent` along with it.
-pub fn makeChildWindow(child: ?*anyopaque, parent: ?*anyopaque, focus: ChildFocus) void {
+/// above, minimizes and restores it with the main window. It has no taskbar, pager or
+/// Alt+Tab entry of its own, unless `taskbar` (Quick Look): then it's a normal window
+/// that has them, under ZFD's name and icon. A window that mustn't take focus says so
+/// before it's mapped: the WM activating it would raise `parent` along with it.
+pub fn makeChildWindow(child: ?*anyopaque, parent: ?*anyopaque, focus: ChildFocus, taskbar: bool) void {
     const dpy = display() orelse return;
     const w = window(child);
     // No background for the X server to paint: on each resize step it filled what
     // the window grew by with it before ZFD drew there, which blinked.
     _ = x.XSetWindowBackgroundPixmap(dpy, w, x.None);
+    // And what it shows kept through a resize (by default the server throws it
+    // away, black until the next frame lands), anchored top left.
+    var grav: x.XSetWindowAttributes = std.mem.zeroes(x.XSetWindowAttributes);
+    grav.bit_gravity = x.NorthWestGravity;
+    _ = x.XChangeWindowAttributes(dpy, w, x.CWBitGravity, &grav);
     if (focus == .popup or focus == .tooltip) {
         // Override-redirect, like any toolkit's tooltips and menus: the window manager
         // leaves it alone entirely. Managed, it was stacked with the window it belongs
@@ -782,7 +800,17 @@ pub fn makeChildWindow(child: ?*anyopaque, parent: ?*anyopaque, focus: ChildFocu
         var attrs: x.XSetWindowAttributes = std.mem.zeroes(x.XSetWindowAttributes);
         attrs.override_redirect = 1;
         _ = x.XChangeWindowAttributes(dpy, w, x.CWOverrideRedirect, &attrs);
-    } else if (parent != null) _ = x.XSetTransientForHint(dpy, w, window(parent));
+    } else if (parent != null) {
+        if (taskbar) {
+            // Transient for ZFD's window group (the root, and the group in its hints)
+            // rather than for the main window: kept above every ZFD window all the same,
+            // but with no window it belongs to, so the taskbar lists it (it leaves a
+            // window's own transients out, as its dialogs).
+            setGroup(dpy, window(parent), window(parent));
+            setGroup(dpy, w, window(parent));
+            _ = x.XSetTransientForHint(dpy, w, x.DefaultRootWindow(dpy));
+        } else _ = x.XSetTransientForHint(dpy, w, window(parent));
+    }
     if (focus != .normal) {
         // EWMH: a user time of 0 means "don't activate this window when it's mapped".
         const zero: c_long = 0;
@@ -801,12 +829,26 @@ pub fn makeChildWindow(child: ?*anyopaque, parent: ?*anyopaque, focus: ChildFocu
         var wtype: c_long = @intCast(x.XInternAtom(dpy, tname, 0));
         _ = x.XChangeProperty(dpy, w, x.XInternAtom(dpy, "_NET_WM_WINDOW_TYPE", 0), x.XA_ATOM, 32, x.PropModeReplace, @ptrCast(&wtype), 1);
     } else {
-        // A panel dragged out of the main window (Quick Look, Progress): a utility
-        // window, a palette of the main one. Window managers animate a normal window
-        // appearing and going (KWin scales it), and one of these comes and goes each
-        // time it crosses the main window's edge, so it seemed to shrink and grow.
-        var wtype: c_long = @intCast(x.XInternAtom(dpy, "_NET_WM_WINDOW_TYPE_UTILITY", 0));
+        // A window of its own beside the main one (Progress, Settings): a utility
+        // window, a palette of the main one; one with a taskbar entry, a normal one.
+        const tname = if (taskbar) "_NET_WM_WINDOW_TYPE_NORMAL" else "_NET_WM_WINDOW_TYPE_UTILITY";
+        var wtype: c_long = @intCast(x.XInternAtom(dpy, tname, 0));
         _ = x.XChangeProperty(dpy, w, x.XInternAtom(dpy, "_NET_WM_WINDOW_TYPE", 0), x.XA_ATOM, 32, x.PropModeReplace, @ptrCast(&wtype), 1);
+    }
+    // ZFD's name (WM_CLASS, the main window's): the taskbar shows its icon, and groups
+    // it with the main window.
+    if (parent != null) {
+        var hint: x.XClassHint = .{ .res_name = null, .res_class = null };
+        if (x.XGetClassHint(dpy, window(parent), &hint) != 0) {
+            _ = x.XSetClassHint(dpy, w, &hint);
+            if (hint.res_name != null) _ = x.XFree(hint.res_name);
+            if (hint.res_class != null) _ = x.XFree(hint.res_class);
+        }
+    }
+    if (taskbar) {
+        _ = x.XDeleteProperty(dpy, w, x.XInternAtom(dpy, "_NET_WM_STATE", 0));
+        _ = x.XFlush(dpy);
+        return;
     }
     var states = [_]c_long{
         @intCast(x.XInternAtom(dpy, "_NET_WM_STATE_SKIP_TASKBAR", 0)),
@@ -815,6 +857,19 @@ pub fn makeChildWindow(child: ?*anyopaque, parent: ?*anyopaque, focus: ChildFocu
     };
     _ = x.XChangeProperty(dpy, w, x.XInternAtom(dpy, "_NET_WM_STATE", 0), x.XA_ATOM, 32, x.PropModeReplace, @ptrCast(&states), states.len);
     _ = x.XFlush(dpy);
+}
+
+/// setGroup puts `w` in the window group led by `leader` (ICCCM WM_HINTS), keeping
+/// the hints GLFW set.
+fn setGroup(dpy: *x.Display, w: x.Window, leader: x.Window) void {
+    var hints: x.XWMHints = std.mem.zeroes(x.XWMHints);
+    if (x.XGetWMHints(dpy, w)) |h| {
+        hints = h.*;
+        _ = x.XFree(h);
+    }
+    hints.flags |= x.WindowGroupHint;
+    hints.window_group = leader;
+    _ = x.XSetWMHints(dpy, w, &hints);
 }
 
 /// setDialogParent marks our (still unmapped) window as a dialog that stays above the
@@ -857,15 +912,78 @@ pub fn setDialogParent(glfw: ?*anyopaque, parent_xid: ?c_ulong) void {
 const WireProc = ?*const fn (?*x.Display, ?*x.XEvent, ?*anyopaque) callconv(.c) c_int;
 extern fn XESetWireToEvent(dpy: *x.Display, event_number: c_int, proc: WireProc) WireProc;
 
-var sync_counter: x.XSyncCounter = 0;
-var sync_window: x.Window = 0;
+// --- where a press was -------------------------------------------------------
+// GLFW hands a press on without where it happened, and ImGui places it where the
+// last motion left the pointer. That's not always where the press was: after the
+// window manager has had the pointer (an edge dragged) no motion comes first, and
+// ImGui put the press where the last one was. So the presses are noted as Xlib reads
+// them (window, position), oldest first, and each is placed there (pressAt, from the
+// press callback in the shim) before ImGui takes it.
+
+const Press = struct { win: x.Window, x: c_int, y: c_int };
+var presses: [16]Press = undefined;
+var presses_n: usize = 0;
+var prev_wire_button: WireProc = null;
+
+/// watchPresses starts noting presses (once, for all of ZFD's windows).
+pub fn watchPresses() void {
+    const dpy = display() orelse return;
+    if (prev_wire_button != null) return;
+    prev_wire_button = XESetWireToEvent(dpy, x.ButtonPress, onWireButton);
+}
+
+fn onWireButton(dpy: ?*x.Display, re: ?*x.XEvent, wire: ?*anyopaque) callconv(.c) c_int {
+    const keep = if (prev_wire_button) |p| p(dpy, re, wire) else 0;
+    if (keep != 0) if (re) |ev| {
+        const b = ev.xbutton.button;
+        if (b <= 3 or b >= 8) { // (4-7 are the wheel: GLFW scrolls with those)
+            if (presses_n == presses.len) {
+                std.mem.copyForwards(Press, presses[0 .. presses.len - 1], presses[1..]);
+                presses_n -= 1;
+            }
+            presses[presses_n] = .{ .win = ev.xbutton.window, .x = ev.xbutton.x, .y = ev.xbutton.y };
+            presses_n += 1;
+        }
+    };
+    return keep;
+}
+
+/// zfd_press_at gives where the oldest press noted in `glfw`'s window was, in it, and
+/// forgets it; false when there's none.
+export fn zfd_press_at(glfw: ?*anyopaque, px: *f64, py: *f64) bool {
+    const w = window(glfw);
+    for (presses[0..presses_n], 0..) |p, i| {
+        if (p.win != w) continue;
+        px.* = @floatFromInt(p.x);
+        py.* = @floatFromInt(p.y);
+        std.mem.copyForwards(Press, presses[i .. presses_n - 1], presses[i + 1 .. presses_n]);
+        presses_n -= 1;
+        return true;
+    }
+    return false;
+}
+
+/// Synced is a window taking part: the main window, and windows of ImGui's own that
+/// the WM resizes (Quick Look, by its edges).
+const Synced = struct {
+    window: x.Window = 0,
+    counter: x.XSyncCounter = 0,
+    owed: ?x.XSyncValue = null, // the value to set once a frame at the new size is drawn
+    configured: bool = false, // the resize the request announced has arrived…
+    want: [2]c_int = .{ 0, 0 }, // …to this size
+    drawn: [2]c_int = .{ 0, 0 }, // the size the frame being drawn was laid out for (noteDrawn)
+    frames: u8 = 0, // frames drawn since the request (a request needn't bring a resize)
+};
+var synced: [4]Synced = @splat(.{});
 var sync_atom: x.Atom = 0;
 var protocols_atom: x.Atom = 0;
 var prev_wire: WireProc = null;
 var prev_wire_configure: WireProc = null;
-var sync_owed: ?x.XSyncValue = null; // the value to set once a frame at the new size is drawn
-var sync_configured = false; // the resize the request announced has arrived
-var sync_frames: u8 = 0; // frames drawn since the request (a request needn't bring a resize)
+
+fn syncedOf(w: x.Window) ?*Synced {
+    for (&synced) |*e| if (e.window != 0 and e.window == w) return e;
+    return null;
+}
 
 /// enableResizeSync advertises resize sync for the window. Call before it's mapped:
 /// the WM looks for the counter when it takes the window on.
@@ -877,13 +995,19 @@ pub fn enableResizeSync(glfw: ?*anyopaque) void {
     var major: c_int = 0;
     var minor: c_int = 0;
     if (x.XSyncQueryExtension(dpy, &ev_base, &err_base) == 0 or x.XSyncInitialize(dpy, &major, &minor) == 0) return;
+    const slot = for (&synced) |*e| {
+        if (e.window == 0) break e;
+    } else return;
     var zero: x.XSyncValue = undefined;
     x.XSyncIntsToValue(&zero, 0, 0);
-    sync_counter = x.XSyncCreateCounter(dpy, zero);
-    sync_window = w;
-    sync_atom = x.XInternAtom(dpy, "_NET_WM_SYNC_REQUEST", 0);
-    protocols_atom = x.XInternAtom(dpy, "WM_PROTOCOLS", 0);
-    var counter: c_long = @intCast(sync_counter);
+    slot.* = .{ .window = w, .counter = x.XSyncCreateCounter(dpy, zero) };
+    if (sync_atom == 0) {
+        sync_atom = x.XInternAtom(dpy, "_NET_WM_SYNC_REQUEST", 0);
+        protocols_atom = x.XInternAtom(dpy, "WM_PROTOCOLS", 0);
+        prev_wire = XESetWireToEvent(dpy, x.ClientMessage, onWireClientMessage);
+        prev_wire_configure = XESetWireToEvent(dpy, x.ConfigureNotify, onWireConfigure);
+    }
+    var counter: c_long = @intCast(slot.counter);
     _ = x.XChangeProperty(dpy, w, x.XInternAtom(dpy, "_NET_WM_SYNC_REQUEST_COUNTER", 0), x.XA_CARDINAL, 32, x.PropModeReplace, @ptrCast(&counter), 1);
     // Add the protocol to the ones GLFW set (WM_DELETE_WINDOW, _NET_WM_PING).
     var list: [16]x.Atom = undefined;
@@ -900,27 +1024,39 @@ pub fn enableResizeSync(glfw: ?*anyopaque) void {
     list[n] = sync_atom;
     n += 1;
     _ = x.XSetWMProtocols(dpy, w, &list, @intCast(n));
-    prev_wire = XESetWireToEvent(dpy, x.ClientMessage, onWireClientMessage);
-    prev_wire_configure = XESetWireToEvent(dpy, x.ConfigureNotify, onWireConfigure);
     // No server-painted background: on a resize the new area waits for our frame
     // instead of flashing black first.
     _ = x.XSetWindowBackgroundPixmap(dpy, w, x.None);
+    // And what it shows kept through a resize, anchored top left: by default the server
+    // throws it away, and the window (see-through where we haven't drawn) vanished
+    // for a frame when the one for the new size wasn't there yet.
+    var grav: x.XSetWindowAttributes = std.mem.zeroes(x.XSetWindowAttributes);
+    grav.bit_gravity = x.NorthWestGravity;
+    _ = x.XChangeWindowAttributes(dpy, w, x.CWBitGravity, &grav);
     _ = x.XFlush(dpy);
+}
+
+/// disableResizeSync forgets a window that's going away (its counter freed).
+pub fn disableResizeSync(glfw: ?*anyopaque) void {
+    const dpy = display() orelse return;
+    const e = syncedOf(window(glfw)) orelse return;
+    _ = x.XSyncDestroyCounter(dpy, e.counter);
+    e.* = .{};
 }
 
 /// onWireClientMessage decodes a ClientMessage as Xlib would, noting a sync request.
 fn onWireClientMessage(dpy: ?*x.Display, re: ?*x.XEvent, wire: ?*anyopaque) callconv(.c) c_int {
     const keep = if (prev_wire) |p| p(dpy, re, wire) else 0;
-    const e = re orelse return keep;
-    const cm = e.xclient;
-    if (keep != 0 and cm.window == sync_window and cm.message_type == protocols_atom and
-        @as(x.Atom, @intCast(cm.data.l[0])) == sync_atom)
-    {
-        var v: x.XSyncValue = undefined;
-        x.XSyncIntsToValue(&v, @truncate(@as(c_ulong, @bitCast(cm.data.l[2]))), @truncate(cm.data.l[3]));
-        sync_owed = v;
-        sync_configured = false;
-        sync_frames = 0;
+    const ev = re orelse return keep;
+    const cm = ev.xclient;
+    if (keep != 0 and cm.message_type == protocols_atom and @as(x.Atom, @intCast(cm.data.l[0])) == sync_atom) {
+        if (syncedOf(cm.window)) |e| {
+            var v: x.XSyncValue = undefined;
+            x.XSyncIntsToValue(&v, @truncate(@as(c_ulong, @bitCast(cm.data.l[2]))), @truncate(cm.data.l[3]));
+            e.owed = v;
+            e.configured = false;
+            e.frames = 0;
+        }
     }
     return keep;
 }
@@ -928,26 +1064,44 @@ fn onWireClientMessage(dpy: ?*x.Display, re: ?*x.XEvent, wire: ?*anyopaque) call
 /// onWireConfigure notes the resize that follows a sync request.
 fn onWireConfigure(dpy: ?*x.Display, re: ?*x.XEvent, wire: ?*anyopaque) callconv(.c) c_int {
     const keep = if (prev_wire_configure) |p| p(dpy, re, wire) else 0;
-    if (keep != 0 and sync_owed != null) if (re) |e| {
-        if (e.xconfigure.window == sync_window) sync_configured = true;
+    if (keep != 0) if (re) |ev| if (syncedOf(ev.xconfigure.window)) |e| {
+        if (e.owed != null) {
+            e.configured = true;
+            e.want = .{ ev.xconfigure.width, ev.xconfigure.height };
+        }
     };
     return keep;
 }
 
+/// noteDrawn records the size a window's frame is laid out for (as it's drawn), for
+/// ackResizeSync: the resize can arrive in the middle of drawing a frame for the old
+/// size (Xlib reads it off the connection whenever it reads), and that frame isn't
+/// the one the window manager waits for. Told it was, it showed it at the new size:
+/// everything a tick off, then back where it belongs.
+pub fn noteDrawn(glfw: ?*anyopaque, w: c_int, h: c_int) void {
+    if (syncedOf(window(glfw))) |e| e.drawn = .{ w, h };
+}
+
 /// ackResizeSync tells the WM that the frame for its last resize step is on screen
 /// (call after swapping buffers). Only once that frame was drawn at the new size
-/// (after the resize arrived) or, for a request that brought none, a few frames on.
+/// (laid out for it: noteDrawn) or, for a request that brought none, a few frames on.
 pub fn ackResizeSync() void {
-    const v = sync_owed orelse return;
-    sync_frames +|= 1;
-    if (!sync_configured and sync_frames < 4) return;
     const dpy = display() orelse return;
-    sync_owed = null;
-    _ = x.XSyncSetCounter(dpy, sync_counter, v);
-    _ = x.XFlush(dpy);
+    var any = false;
+    for (&synced) |*e| {
+        const v = e.owed orelse continue;
+        e.frames +|= 1;
+        const ready = e.configured and e.drawn[0] == e.want[0] and e.drawn[1] == e.want[1];
+        if (!ready and e.frames < 4) continue;
+        e.owed = null;
+        _ = x.XSyncSetCounter(dpy, e.counter, v);
+        any = true;
+    }
+    if (any) _ = x.XFlush(dpy);
 }
 
 /// resizeSyncPending: the WM is waiting on a frame (keep drawing).
 pub fn resizeSyncPending() bool {
-    return sync_owed != null;
+    for (synced) |e| if (e.owed != null) return true;
+    return false;
 }

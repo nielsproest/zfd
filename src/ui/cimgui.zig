@@ -48,6 +48,9 @@ pub extern fn zfd_frame_hash(fb_w: c_int, fb_h: c_int) u64;
 /// zfd_sync_viewports has ImGui take the real position of its OS windows the window
 /// manager placed elsewhere than asked (imgui_shim.cpp). Call before igNewFrame.
 pub extern fn zfd_sync_viewports() void;
+/// zfd_update_cursors puts ImGui's mouse cursor on each of its OS windows (the
+/// backend only managed the first).
+pub extern fn zfd_update_cursors() void;
 
 /// zfd_free_ctrl_tab unbinds ImGui's Ctrl+Tab window switcher (the shell cycles tabs).
 pub extern fn zfd_free_ctrl_tab() void;
@@ -65,9 +68,23 @@ pub extern fn zfd_enable_viewports() void;
 
 /// zfd_hook_viewport_windows calls `cb` with each secondary viewport's GLFW window
 /// right after it's created, before it's shown. Call after the GLFW backend init.
+/// zfd_viewport_resizes counts the resizes ImGui made to its OS windows.
+pub extern fn zfd_viewport_resizes() c_int;
 /// zfd_limit_content caps what the current window scrolls over at (x, y) (screen
 /// position): items drawn over the content past that don't widen it.
 pub extern fn zfd_limit_content(x: f32, y: f32) void;
+/// zfd_viewports_finish: each OS window of ImGui's own finishes its frame after its
+/// swap (glFinish), for resize sync.
+pub extern fn zfd_viewports_finish(on: bool) void;
+/// zfd_next_window_class: the next window gets an OS window of its own even over
+/// the main one (never merged into it); `taskbar`: with a taskbar entry of its own.
+pub extern fn zfd_next_window_class(taskbar: bool) void;
+/// zfd_press_where_pointer_is: a press in `w` is placed where it happened (x11.zig
+/// notes that), before ImGui takes it.
+pub extern fn zfd_press_where_pointer_is(w: ?*c.GLFWwindow) void;
+/// zfd_viewports_drawn: `cb` is told the size each OS window of ImGui's own is drawn
+/// at, as it's drawn.
+pub extern fn zfd_viewports_drawn(cb: *const fn (?*anyopaque, c_int, c_int) callconv(.c) void) void;
 pub extern fn zfd_hook_viewport_windows(cb: *const fn (?*anyopaque, c_int) callconv(.c) void) void;
 
 /// zfd_viewports_enabled reports whether ImGui coordinates are desktop coordinates
