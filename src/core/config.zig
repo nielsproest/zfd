@@ -24,6 +24,8 @@ pub const Settings = struct {
     menu_bar: bool = true, // the File/Edit/View/Go/Window/Help bar
     archive_browse: bool = true, // opening an archive shows its contents (else: default app)
     notify_devices: bool = true, // desktop notification when a device is plugged in
+    pdf_snap: bool = true, // Quick Look's PDFs: Page Up/Down go a whole page
+    pdf_sidebar: bool = true, // Quick Look's PDFs open with their sidebar
     sidebar_hide: u16 = 0, // sidebar items switched off in Settings (bit per item)
     tags_hide: u16 = 0, // tags left out of the sidebar (tag bits)
     preview_pane: bool = false, // View > Show Preview
@@ -106,6 +108,10 @@ fn applyKey(s: *Settings, key: []const u8, val: []const u8) void {
         s.sort_ascending = parseBool(val);
     } else if (eql(key, "sidebar_w")) {
         s.sidebar_w = std.fmt.parseFloat(f32, val) catch s.sidebar_w;
+    } else if (eql(key, "pdf_snap")) {
+        s.pdf_snap = parseBool(val);
+    } else if (eql(key, "pdf_sidebar")) {
+        s.pdf_sidebar = parseBool(val);
     } else if (eql(key, "archive_browse")) {
         s.archive_browse = parseBool(val);
     } else if (eql(key, "notify_devices")) {
@@ -233,6 +239,8 @@ pub fn serialize(alloc: std.mem.Allocator, s: Settings) ![]u8 {
         \\text_scale={d:.2}
         \\toolbar={s}
         \\thumb_workers={d}
+        \\pdf_snap={d}
+        \\pdf_sidebar={d}
         \\
     , .{
         general,
@@ -247,6 +255,8 @@ pub fn serialize(alloc: std.mem.Allocator, s: Settings) ![]u8 {
         s.text_scale,
         s.toolbar(),
         s.thumb_workers,
+        @intFromBool(s.pdf_snap),
+        @intFromBool(s.pdf_sidebar),
     });
 }
 

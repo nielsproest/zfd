@@ -570,6 +570,22 @@ pub fn markTabWindow(glfw: ?*anyopaque) void {
     _ = x.XFlush(dpy);
 }
 
+/// shiftHeld reports whether Shift is down, as X has it with the pointer. ImGui's
+/// Shift comes from the window with the keyboard, which a click in another of ours
+/// (Quick Look in a window of its own) doesn't always have yet.
+pub fn shiftHeld() bool {
+    const dpy = display() orelse return false;
+    var rr: x.Window = undefined;
+    var ch: x.Window = undefined;
+    var rx: c_int = 0;
+    var ry: c_int = 0;
+    var wx: c_int = 0;
+    var wy: c_int = 0;
+    var mask: c_uint = 0;
+    if (x.XQueryPointer(dpy, x.XDefaultRootWindow(dpy), &rr, &ch, &rx, &ry, &wx, &wy, &mask) == 0) return false;
+    return mask & x.ShiftMask != 0;
+}
+
 /// pointerRoot returns the pointer's root-window (screen) position.
 pub fn pointerRoot(glfw: ?*anyopaque) ?[2]i32 {
     _ = glfw;

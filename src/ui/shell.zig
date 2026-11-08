@@ -23,6 +23,7 @@ const anim = @import("anim.zig");
 const x11 = @import("x11.zig");
 const notify = @import("notify.zig");
 const quicklook = @import("quicklook.zig");
+const pdfview = @import("pdfview.zig");
 const connect_mod = @import("connect.zig");
 
 const Browser = core.browser.Browser;
@@ -329,6 +330,8 @@ pub const Shell = struct {
         self.menu_bar = settings.menu_bar;
         self.archive_browse = settings.archive_browse;
         self.notify_devices = settings.notify_devices;
+        pdfview.snap_pages = settings.pdf_snap;
+        pdfview.sidebar_shown = settings.pdf_sidebar;
         self.sidebar_hide = settings.sidebar_hide;
         self.tags_hide = settings.tags_hide;
         self.show_preview = settings.preview_pane;
@@ -1056,6 +1059,8 @@ pub const Shell = struct {
             .menu_bar = self.menu_bar,
             .archive_browse = self.archive_browse,
             .notify_devices = self.notify_devices,
+            .pdf_snap = pdfview.snap_pages,
+            .pdf_sidebar = pdfview.sidebar_shown,
             .sidebar_hide = self.sidebar_hide,
             .tags_hide = self.tags_hide,
             .preview_pane = self.show_preview,
@@ -2355,7 +2360,7 @@ pub const Shell = struct {
         } else self.ql_wm_handle = null;
         if (!open) return;
         // Escape leaves full screen first, as on macOS; then it closes Quick Look.
-        if (self.ql_open and c.igIsKeyPressed_Bool(c.ImGuiKey_Escape, false) and !cimgui.zfd_want_text_input()) {
+        if (self.ql_open and c.igIsKeyPressed_Bool(c.ImGuiKey_Escape, false) and !cimgui.zfd_want_text_input() and !pdfview.takesEscape()) {
             if (self.ql_full) {
                 self.ql_full = false;
                 self.ql_restore = true;
@@ -2401,16 +2406,22 @@ pub const Shell = struct {
         if (winButton(.close, wb_h, "Close (Space)", bar_bg)) self.ql_open = false;
         c.igPopID();
         var right = wp.x + ws.x - pad - wb_w * 2;
-        // Rotate, for a picture (as macOS's Quick Look has them), left of those.
+        // Rotate, for a picture (as macOS's Quick Look has them), left of those; a
+        // PDF's pages turn in the view (the file stays as it is).
         const browsing = self.ql_path != null;
-        if (has and !browsing and self.canRotate(b)) if (self.ffmpeg_path) |ff| {
+        const pdf_doc = self.preview.pdfDoc();
+        if (pdf_doc != null or (has and !browsing and self.canRotate(b) and self.ffmpeg_path != null)) {
             const tbw = @round(toolbarH() * 1.2);
             right -= tbw * 2 + fs * 0.4;
             c.igSetCursorScreenPos(cimgui.vec2(right, wp.y + pad));
-            if (toolButton("##qlrotl", .rotate_left, true, false, "Rotate Left")) self.runImageAction(b, ff, .{ .rotate = false });
+            if (toolButton("##qlrotl", .rotate_left, true, false, "Rotate Left")) {
+                if (pdf_doc) |d| d.rotate(false) else self.runImageAction(b, self.ffmpeg_path.?, .{ .rotate = false });
+            }
             c.igSameLine(0, 0);
-            if (toolButton("##qlrotr", .rotate_right, true, false, "Rotate Right")) self.runImageAction(b, ff, .{ .rotate = true });
-        };
+            if (toolButton("##qlrotr", .rotate_right, true, false, "Rotate Right")) {
+                if (pdf_doc) |d| d.rotate(true) else self.runImageAction(b, self.ffmpeg_path.?, .{ .rotate = true });
+            }
+        }
         var left_end = wp.x + pad;
         var ob: [160]u8 = undefined;
         // Browsed into something: a back button first, out to where it came from.
@@ -3204,7 +3215,7 @@ pub const Shell = struct {
         // Plain Ctrl only: Ctrl+Shift+F is Go ▸ Recent and Ctrl+Alt+L Downloads.
         const plain = !c.igIsKeyDown_Nil(c.ImGuiMod_Shift) and !c.igIsKeyDown_Nil(c.ImGuiMod_Alt);
         if (plain and c.igIsKeyPressed_Bool(c.ImGuiKey_L, false)) self.focus_path = true;
-        if (plain and c.igIsKeyPressed_Bool(c.ImGuiKey_F, false)) self.focus_search = true;
+        if (plain and c.igIsKeyPressed_Bool(c.ImGuiKey_F, false) and !pdfview.ownsKeys()) self.focus_search = true; // (a PDF in Quick Look finds in itself)
         // Ctrl+1 list, Ctrl+2 icons (Finder's Cmd+1/2), for the focused pane.
         if (c.igIsKeyPressed_Bool(c.ImGuiKey_1, false)) self.activeBrowser().setViewMode(.list);
         if (c.igIsKeyPressed_Bool(c.ImGuiKey_2, false)) self.activeBrowser().setViewMode(.grid);
@@ -4585,6 +4596,8 @@ pub const Shell = struct {
                 if (c.igCombo_Str("##archive", &ar, "Shows what's inside\x00Opens it in its app\x00", -1)) self.archive_browse = ar == 0;
                 formLabel("Devices:", label_w);
                 _ = c.igCheckbox("Notify me when one is plugged in", &self.notify_devices);
+                formLabel("Reading a PDF:", label_w);
+                _ = c.igCheckbox("Page Up and Page Down go a whole page", &pdfview.snap_pages);
             },
             .tags => {
                 c.igPushTextWrapPos(content_w);
@@ -6128,8 +6141,18 @@ fn infoRow(label: []const u8, value: []const u8) void {
     cimgui.textUnformatted(label);
     c.igPopStyleColor(1);
     const vw = c.igCalcTextSize(value.ptr, value.ptr + value.len, false, -1).x;
-    c.igSameLine(@max(c.igGetContentRegionAvail().x + c.igGetCursorPosX() - vw, 0), -1);
-    cimgui.textUnformatted(value);
+    const lw = c.igGetItemRectSize().x;
+    const room = c.igGetContentRegionAvail().x;
+    if (vw <= room - lw - c.igGetStyle().*.ItemSpacing.x * 2) {
+        // Beside its label, at the right edge.
+        c.igSameLine(@max(room + c.igGetCursorPosX() - vw, 0), -1);
+        cimgui.textUnformatted(value);
+    } else {
+        // Too long for that: under it, wrapped at the edge (not running off it).
+        c.igPushTextWrapPos(0);
+        cimgui.textUnformatted(value);
+        c.igPopTextWrapPos();
+    }
 }
 
 /// formLabel starts a form row: `label` right-aligned in a `w`-wide column, then the

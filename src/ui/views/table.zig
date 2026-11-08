@@ -14,6 +14,7 @@ const scan = core.scan;
 const actions = @import("actions.zig");
 const icons = @import("icons.zig");
 const anim = @import("../anim.zig");
+const pdfview = @import("../pdfview.zig");
 
 const Browser = core.browser.Browser;
 const ViewActions = actions.ViewActions;
@@ -108,10 +109,11 @@ pub const TableView = struct {
         const shift = c.igIsKeyDown_Nil(c.ImGuiMod_Shift);
         const alt = c.igIsKeyDown_Nil(c.ImGuiMod_Alt);
         // (Ctrl+Shift+C and +H are the Go menu's Computer and Home.)
-        if (ctrl and !shift and c.igIsKeyPressed_Bool(c.ImGuiKey_C, false)) b.copySelection();
+        // (A PDF read in Quick Look copies its own selected text, and selects its own.)
+        if (ctrl and !shift and c.igIsKeyPressed_Bool(c.ImGuiKey_C, false) and !pdfview.takesCopy()) b.copySelection();
         if (ctrl and c.igIsKeyPressed_Bool(c.ImGuiKey_X, false)) b.cutSelection();
         if (ctrl and c.igIsKeyPressed_Bool(c.ImGuiKey_V, false)) b.paste();
-        if (ctrl and c.igIsKeyPressed_Bool(c.ImGuiKey_A, false)) b.selectAll();
+        if (ctrl and c.igIsKeyPressed_Bool(c.ImGuiKey_A, false) and !pdfview.ownsKeys()) b.selectAll();
         if (ctrl and c.igIsKeyPressed_Bool(c.ImGuiKey_I, false)) b.sel.invert();
         if (ctrl and !shift and c.igIsKeyPressed_Bool(c.ImGuiKey_H, false)) b.toggleHidden(); // as in Dolphin/Nautilus
         if (c.igIsKeyPressed_Bool(c.ImGuiKey_F5, false) or (ctrl and c.igIsKeyPressed_Bool(c.ImGuiKey_R, false))) b.refresh();

@@ -41,6 +41,7 @@ pub const arcfs = @import("arcfs.zig");
 pub const mediainfo = @import("mediainfo.zig");
 pub const nanorc = @import("nanorc.zig");
 pub const markdown = @import("markdown.zig");
+pub const pdftext = @import("pdftext.zig");
 pub const rclone = @import("rclone.zig");
 pub const rcd = @import("rcd.zig");
 pub const sshconfig = @import("sshconfig.zig");
@@ -71,6 +72,7 @@ test {
     _ = mediainfo;
     _ = nanorc;
     _ = markdown;
+    _ = pdftext;
     _ = scanner;
     _ = selection;
     _ = clipboard;

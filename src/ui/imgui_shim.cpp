@@ -259,3 +259,11 @@ extern "C" uint64_t zfd_frame_hash(int fb_w, int fb_h) {
     }
     return h ? h : 1;
 }
+
+// zfd_limit_content caps the current window's content (what it scrolls over) at the
+// screen position (x, y): overlays drawn as items past it don't count.
+extern "C" void zfd_limit_content(float x, float y) {
+    ImGuiWindow *w = ImGui::GetCurrentWindow();
+    w->DC.CursorMaxPos.x = ImMin(w->DC.CursorMaxPos.x, x);
+    w->DC.CursorMaxPos.y = ImMin(w->DC.CursorMaxPos.y, y);
+}

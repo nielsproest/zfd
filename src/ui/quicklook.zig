@@ -14,6 +14,8 @@ const c = cimgui.c;
 const core = @import("core");
 const icons = @import("views/icons.zig");
 const theme = @import("theme.zig");
+const pdfview = @import("pdfview.zig");
+const anim = @import("anim.zig");
 
 extern fn zfd_image_load_mem(buf: [*]const u8, len: c_int, max_dim: c_int, w: *c_int, h: *c_int) ?[*]u8;
 extern fn zfd_image_free(px: [*]u8) void;
@@ -130,7 +132,10 @@ pub const Loader = struct {
 
             const content = load(self.io, self.alloc, path);
             // Its details (a file ffprobe reads, so not one inside an archive).
-            const info: ?[]u8 = if (ffprobe) |fp| (if (core.mediainfo.isMedia(std.fs.path.basename(path)) and !core.arcfs.isArchived(path)) core.mediainfo.probe(self.io, self.alloc, fp, path) else null) else null;
+            const archived = core.arcfs.isArchived(path);
+            const info: ?[]u8 = if (std.ascii.endsWithIgnoreCase(path, ".pdf") and !archived)
+                pdfInfo(self.io, self.alloc, path)
+            else if (ffprobe) |fp| (if (core.mediainfo.isMedia(std.fs.path.basename(path)) and !archived) core.mediainfo.probe(self.io, self.alloc, fp, path) else null) else null;
             // A folder's items with their details, for Quick Look's folder view (a
             // folder inside an archive too).
             const listing: ?core.scan.Listing = if (content == .folder) (core.arcfs.readAny(self.io, self.alloc, path, null, true) catch null) else null;
@@ -317,7 +322,108 @@ fn textPreview(io: std.Io, alloc: std.mem.Allocator, path: []const u8) ?[]u8 {
 
 /// runCapture runs argv and returns its stdout (up to `max` bytes; owned), or null
 /// when it can't run or fails.
-fn runCapture(io: std.Io, alloc: std.mem.Allocator, argv: []const []const u8, max: usize) ?[]u8 {
+/// pdfInfo is a PDF's More Info, from pdfinfo ("Label\tValue" lines; owned): its
+/// title, author, subject, pages, page size, what made it, version, dates. Null
+/// without poppler.
+fn pdfInfo(io: std.Io, alloc: std.mem.Allocator, path: []const u8) ?[]u8 {
+    const out = runCapture(io, alloc, &.{ "pdfinfo", path }, 1 << 20) orelse return null;
+    defer alloc.free(out);
+    return pdfInfoOf(alloc, out);
+}
+
+fn pdfInfoOf(alloc: std.mem.Allocator, out: []const u8) ?[]u8 {
+    const order = [_]struct { key: []const u8, label: []const u8 }{
+        .{ .key = "Title", .label = "Title" },
+        .{ .key = "Author", .label = "Author" },
+        .{ .key = "Subject", .label = "Subject" },
+        .{ .key = "Keywords", .label = "Keywords" },
+        .{ .key = "Pages", .label = "Pages" },
+        .{ .key = "Page size", .label = "Page size" },
+        .{ .key = "Creator", .label = "Made with" },
+        .{ .key = "Producer", .label = "PDF made by" },
+        .{ .key = "PDF version", .label = "PDF version" },
+        .{ .key = "Encrypted", .label = "Encrypted" }, // (with what it allows: print, copy, …)
+        .{ .key = "Form", .label = "Form" },
+        .{ .key = "JavaScript", .label = "JavaScript" },
+        .{ .key = "Tagged", .label = "Tagged" },
+        .{ .key = "Optimized", .label = "Fast web view" },
+        .{ .key = "CreationDate", .label = "Created" },
+        .{ .key = "ModDate", .label = "Modified" },
+    };
+    var res = std.ArrayList(u8).empty;
+    for (order) |o| {
+        var lines = std.mem.splitScalar(u8, out, '\n');
+        while (lines.next()) |l| {
+            if (!std.mem.startsWith(u8, l, o.key) or l.len <= o.key.len or l[o.key.len] != ':') continue;
+            const v = std.mem.trim(u8, l[o.key.len + 1 ..], " \t\r");
+            // (a flag that's off, or "none", isn't worth a line)
+            if (v.len == 0 or std.mem.eql(u8, v, "no") or std.mem.eql(u8, v, "none")) break;
+            res.appendSlice(alloc, o.label) catch return null;
+            res.append(alloc, '\t') catch return null;
+            if (std.mem.eql(u8, o.key, "Page size")) {
+                // "612 x 792 pts (letter)": in millimetres too.
+                var it = std.mem.tokenizeScalar(u8, v, ' ');
+                const w = std.fmt.parseFloat(f32, it.next() orelse "") catch 0;
+                _ = it.next();
+                const h = std.fmt.parseFloat(f32, it.next() orelse "") catch 0;
+                _ = it.next();
+                const name = std.mem.trim(u8, it.rest(), "() ");
+                const mm = 25.4 / 72.0;
+                res.print(alloc, "{d:.0} x {d:.0} mm{s}{s}", .{ w * mm, h * mm, if (name.len > 0) ", " else "", name }) catch return null;
+            } else {
+                // (pdfinfo pads its dates' days with a space: "Jan  5")
+                // (and a long one, a title or keywords someone filled a page with,
+                // is cut off: More Info is a glance, not the document)
+                const max_value = 160;
+                var prev_space = false;
+                var n: usize = 0;
+                for (v) |ch| {
+                    if (ch == ' ' and prev_space) continue;
+                    prev_space = ch == ' ';
+                    // (cut between characters, not inside one)
+                    if (n >= max_value and (ch & 0xC0) != 0x80) {
+                        res.appendSlice(alloc, "\u{2026}") catch return null;
+                        break;
+                    }
+                    res.append(alloc, ch) catch return null;
+                    n += 1;
+                }
+            }
+            res.append(alloc, '\n') catch return null;
+            break;
+        }
+    }
+    if (res.items.len == 0) return null;
+    return res.toOwnedSlice(alloc) catch null;
+}
+
+test "pdfInfoOf: pdfinfo's fields as More Info" {
+    const out =
+        \\Title:           Drawing graphs with dot
+        \\Creator:         TeX
+        \\Producer:        pdfTeX-1.40.15
+        \\CreationDate:    Mon Jan  5 21:55:25 2015 CET
+        \\Encrypted:       no
+        \\Pages:           40
+        \\Page size:       612 x 792 pts (letter)
+        \\PDF version:     1.5
+    ;
+    const s = pdfInfoOf(std.testing.allocator, out).?;
+    defer std.testing.allocator.free(s);
+    try std.testing.expectEqualStrings("Title\tDrawing graphs with dot\nPages\t40\nPage size\t216 x 279 mm, letter\nMade with\tTeX\nPDF made by\tpdfTeX-1.40.15\nPDF version\t1.5\nCreated\tMon Jan 5 21:55:25 2015 CET\n", s);
+}
+
+test "pdfInfoOf: a long value is cut off" {
+    var in: [17 + 500]u8 = undefined;
+    @memcpy(in[0..17], "Keywords:        ");
+    for (0..100) |k| @memcpy(in[17 + k * 5 ..][0..5], "word ");
+    const s = pdfInfoOf(std.testing.allocator, &in).?;
+    defer std.testing.allocator.free(s);
+    try std.testing.expect(std.mem.endsWith(u8, s, "\u{2026}\n"));
+    try std.testing.expect(s.len < "Keywords\t".len + 160 + 8);
+}
+
+pub fn runCapture(io: std.Io, alloc: std.mem.Allocator, argv: []const []const u8, max: usize) ?[]u8 {
     const linux = std.os.linux;
     const mfd = linux.memfd_create("zfd-ql", linux.MFD.CLOEXEC);
     if (mfd > std.math.maxInt(i32)) return null;
@@ -408,6 +514,23 @@ fn categoryOf(e: core.scan.Entry) PeekFilter {
     return .other; // (archives, programs, anything else)
 }
 
+/// spinner is macOS's busy wheel: twelve spokes, the lit one going round, fading
+/// behind it (still, with Reduce motion).
+pub fn spinner(dl: *c.ImDrawList, ctr: c.ImVec2_c, r: f32) void {
+    const col = theme.text();
+    const lit: f32 = if (anim.reduce_motion) 0 else @floor(anim.cycle(1.0) * 12);
+    const w = @max(r * 0.16, 1.5);
+    for (0..12) |i| {
+        const fi: f32 = @floatFromInt(i);
+        const ang = fi / 12 * std.math.tau - std.math.pi / 2.0;
+        const behind = @mod(lit - fi, 12); // 0: the lit spoke
+        const a = if (anim.reduce_motion) 0.5 else 0.15 + 0.85 * (1 - behind / 12);
+        const dx = @cos(ang);
+        const dy = @sin(ang);
+        c.ImDrawList_AddLine(dl, cimgui.vec2(ctr.x + dx * r * 0.5, ctr.y + dy * r * 0.5), cimgui.vec2(ctr.x + dx * r, ctr.y + dy * r), c.igGetColorU32_Vec4(cimgui.vec4(col.x, col.y, col.z, a)), w);
+    }
+}
+
 /// Md is a Markdown text read into blocks, and each block's styled runs.
 const Md = struct {
     arena: std.heap.ArenaAllocator,
@@ -489,6 +612,7 @@ pub const View = struct {
     path: std.ArrayList(u8) = .empty, // what the window shows (or is loading)
     gen: u64 = 0,
     loading: bool = false,
+    load_t: f64 = 0, // when the newest request went out (its spinner waits a moment)
     tex: c_uint = 0,
     tex_w: f32 = 0,
     tex_h: f32 = 0,
@@ -504,6 +628,7 @@ pub const View = struct {
     listing: ?core.scan.Listing = null,
     spans: ?[]core.nanorc.Span = null, // the text's syntax colours (owned; null: plain)
     md: ?Md = null, // a Markdown text, read into blocks (on its first draw)
+    pdf: ?*pdfview.PdfDoc = null, // a PDF, every page (Quick Look's window only)
     line_starts: std.ArrayList(u32) = .empty, // where each of the text's lines starts (coloured text; c_allocator)
     peek_filter: PeekFilter = .all,
     peek_order: std.ArrayList(usize) = .empty,
@@ -521,6 +646,8 @@ pub const View = struct {
         self.clear(alloc);
         self.peek_order.deinit(alloc);
         self.line_starts.deinit(std.heap.c_allocator); // (drawColoured's)
+        if (self.pdf) |d| d.destroy();
+        self.pdf = null;
         if (self.peek_inner) |v| {
             v.deinit(alloc);
             alloc.destroy(v);
@@ -803,6 +930,7 @@ pub const View = struct {
                 if (self.loader) |l| {
                     self.gen = l.request(p);
                     self.loading = true;
+                    self.load_t = c.igGetTime();
                 }
             }
         }
@@ -854,6 +982,8 @@ pub const View = struct {
     /// clicked into (returned for the caller to navigate).
     pub fn drawPreview(self: *View, size: c.ImVec2_c, zoom: ?*Zoom) ?Enter {
         var enter: ?Enter = null;
+        // A PDF in Quick Look's own window: every page, scrolled through.
+        if (zoom != null and self.drawPdf(size)) return null;
         // Coloured text (code) isn't wrapped: it scrolls sideways too.
         const md_file = core.markdown.isMarkdown(self.path.items);
         const flags: c.ImGuiWindowFlags = if (self.text == null or self.is_message) c.ImGuiWindowFlags_NoScrollbar else if (self.spans != null and !md_file) c.ImGuiWindowFlags_HorizontalScrollbar else 0;
@@ -862,7 +992,7 @@ pub const View = struct {
         if (self.path.items.len == 0) {
             centeredText("Nothing selected");
         } else if (self.loading and self.tex == 0 and self.text == null) {
-            centeredText("Loading\u{2026}");
+            // (the spinner below, in the middle)
         } else if (self.tex != 0) {
             self.drawImage(zoom);
         } else if (self.text) |t| {
@@ -881,7 +1011,48 @@ pub const View = struct {
                 c.igPopTextWrapPos();
             }
         }
+        // Loading a new preview (past a moment, so a quick one doesn't flash it): a
+        // spinner, in the middle if there's nothing shown yet, else in the corner
+        // over the last one.
+        if (self.loading and self.path.items.len > 0 and c.igGetTime() - self.load_t > 0.15) {
+            const wp = c.igGetWindowPos();
+            const ws = c.igGetWindowSize();
+            const r = c.igGetTextLineHeight() * 0.8;
+            const dl = c.igGetWindowDrawList();
+            if (self.tex == 0 and self.text == null) {
+                spinner(dl, cimgui.vec2(wp.x + ws.x * 0.5, wp.y + ws.y * 0.5), r * 1.4);
+            } else {
+                const ctr = cimgui.vec2(wp.x + ws.x - r * 2, wp.y + r * 2);
+                const bg = theme.p().dark;
+                c.ImDrawList_AddCircleFilled(dl, ctr, r * 1.5, if (bg) 0xC0202020 else 0xC0F4F4F4, 24);
+                spinner(dl, ctr, r);
+            }
+        } else if (self.loading) _ = anim.cycle(1); // (frames until it shows)
         return enter;
+    }
+
+    /// pdfDoc is the PDF Quick Look is reading, if it's showing one.
+    pub fn pdfDoc(self: *View) ?*pdfview.PdfDoc {
+        return self.pdf;
+    }
+
+    /// drawPdf shows a PDF as a reader (pdfview); false when it's not one, or
+    /// poppler can't read it (the usual first-page preview then).
+    fn drawPdf(self: *View, size: c.ImVec2_c) bool {
+        const p = self.path.items;
+        const is_pdf = p.len > 4 and std.ascii.endsWithIgnoreCase(p, ".pdf") and !core.arcfs.isArchived(p);
+        if (self.pdf) |d| if (!is_pdf or !d.isFor(p)) {
+            d.destroy();
+            self.pdf = null;
+        };
+        if (!is_pdf) return false;
+        if (self.pdf == null) {
+            const l = self.loader orelse return false;
+            self.pdf = pdfview.PdfDoc.create(l.io, std.heap.c_allocator, p) catch return false;
+        }
+        // (the picture is the last item's until this one's preview has loaded)
+        if (self.loading) return self.pdf.?.draw(size, 0, 0, 0);
+        return self.pdf.?.draw(size, self.tex, self.img_w, self.img_h);
     }
 
     /// drawMarkdown draws a Markdown text as it reads: headings sized, lists marked,

@@ -65,6 +65,9 @@ pub extern fn zfd_enable_viewports() void;
 
 /// zfd_hook_viewport_windows calls `cb` with each secondary viewport's GLFW window
 /// right after it's created, before it's shown. Call after the GLFW backend init.
+/// zfd_limit_content caps what the current window scrolls over at (x, y) (screen
+/// position): items drawn over the content past that don't widen it.
+pub extern fn zfd_limit_content(x: f32, y: f32) void;
 pub extern fn zfd_hook_viewport_windows(cb: *const fn (?*anyopaque, c_int) callconv(.c) void) void;
 
 /// zfd_viewports_enabled reports whether ImGui coordinates are desktop coordinates
