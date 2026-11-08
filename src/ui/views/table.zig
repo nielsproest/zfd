@@ -35,6 +35,7 @@ pub const TableView = struct {
     ta_len: usize = 0,
     ta_time: f64 = 0, // last type-ahead keystroke time (igGetTime); reset after idle
     marquee_active: bool = false, // rubber-band drag in progress
+    marquee_pending: bool = false, // pressed on no item: a rubber band once it's dragged
     marquee_add: bool = false, // Ctrl/Shift held at marquee start: add to the selection
     marquee_start: c.ImVec2_c = .{ .x = 0, .y = 0 }, // marquee anchor (screen)
     list_min: c.ImVec2_c = .{ .x = 0, .y = 0 }, // the list's screen rect, for its drop target
@@ -188,29 +189,9 @@ pub const TableView = struct {
         const tbl_avail = c.igGetContentRegionAvail();
         const tbl_h = if (list_height > 0) list_height else tbl_avail.y + list_height;
         const tbl_max = cimgui.vec2(tbl_min.x + tbl_avail.x, tbl_min.y + tbl_h);
-        if (!self.marquee_active and c.igIsWindowHovered(c.ImGuiHoveredFlags_ChildWindows) and c.igIsMouseHoveringRect(tbl_min, tbl_max, false) and
-            !c.igIsAnyItemHovered() and c.igIsMouseClicked_Bool(0, false))
-        {
-            self.marquee_active = true;
-            // Ctrl/Shift+drag extends the existing selection (Explorer); a plain drag
-            // replaces it. Recorded at the press so releasing the modifier mid-drag
-            // doesn't suddenly wipe what the box already added.
-            self.marquee_add = c.igIsKeyDown_Nil(c.ImGuiMod_Ctrl) or c.igIsKeyDown_Nil(c.ImGuiMod_Shift);
-            self.marquee_start = c.igGetMousePos();
-            if (!self.marquee_add) b.sel.clear();
-        }
-        // A live drag-and-drop always wins: pressing on a row starts a DnD, and the
-        // marquee must not also run (it would clear the very selection being dragged).
-        if (self.marquee_active and c.igGetDragDropPayload() != null) self.marquee_active = false;
-        if (self.marquee_active and !c.igIsMouseDown_Nil(0)) self.marquee_active = false;
-        var mr_min = cimgui.vec2(0, 0);
-        var mr_max = cimgui.vec2(0, 0);
-        if (self.marquee_active) {
-            const cur = c.igGetMousePos();
-            mr_min = cimgui.vec2(@min(self.marquee_start.x, cur.x), @min(self.marquee_start.y, cur.y));
-            mr_max = cimgui.vec2(@max(self.marquee_start.x, cur.x), @max(self.marquee_start.y, cur.y));
-            if (!self.marquee_add) b.sel.clear(); // rebuild the selection from the box each frame
-        }
+        const box = marquee(self, b, tbl_min, tbl_max);
+        const mr_min = box[0];
+        const mr_max = box[1];
 
         if (!c.igBeginTable("##files", 12, table_flags, cimgui.vec2(0, list_height), 0)) return;
         defer c.igEndTable();
@@ -825,6 +806,49 @@ pub fn drawDragPreview(b: *Browser) void {
 }
 
 /// rectsOverlap reports whether two screen-space AABBs intersect (marquee vs row).
+/// marquee runs the rubber band over the area min–max (the list's, the icons'), and
+/// gives its box while one is drawn (the rows or icons it covers get selected; the
+/// box is empty otherwise). A press on no item there starts it, but only a drag makes
+/// it one: a click stays a click. Whether the press was on an item is last frame's
+/// word (this frame's items come later), and a quick hand arriving on a row as it
+/// clicked started a band: the row was selected by it, but the cursor (what the
+/// preview and Open go by) stayed where it was. Now that row takes the click itself,
+/// later in the frame; a click on empty space clears the selection.
+pub fn marquee(self: *TableView, b: *Browser, area_min: c.ImVec2_c, area_max: c.ImVec2_c) [2]c.ImVec2_c {
+    if (!self.marquee_active and !self.marquee_pending and c.igIsWindowHovered(c.ImGuiHoveredFlags_ChildWindows) and
+        c.igIsMouseHoveringRect(area_min, area_max, false) and !c.igIsAnyItemHovered() and c.igIsMouseClicked_Bool(0, false))
+    {
+        self.marquee_pending = true;
+        // Ctrl/Shift+drag extends the existing selection (Explorer); a plain drag
+        // replaces it. Recorded at the press so releasing the modifier mid-drag
+        // doesn't suddenly wipe what the box already added.
+        self.marquee_add = c.igIsKeyDown_Nil(c.ImGuiMod_Ctrl) or c.igIsKeyDown_Nil(c.ImGuiMod_Shift);
+        self.marquee_start = c.igGetMousePos();
+    }
+    // A live drag-and-drop always wins: pressing on a row starts a DnD, and the band
+    // must not also run (it would clear the very selection being dragged).
+    const dnd = c.igGetDragDropPayload() != null;
+    if (self.marquee_pending) {
+        if (dnd) {
+            self.marquee_pending = false;
+        } else if (!c.igIsMouseDown_Nil(0)) {
+            self.marquee_pending = false;
+            if (!self.marquee_add) b.sel.clear(); // (a row clicked takes it after this)
+        } else if (c.igIsMouseDragging(0, -1)) {
+            self.marquee_pending = false;
+            self.marquee_active = true;
+        }
+    }
+    if (self.marquee_active and (dnd or !c.igIsMouseDown_Nil(0))) self.marquee_active = false;
+    if (!self.marquee_active) return .{ cimgui.vec2(0, 0), cimgui.vec2(0, 0) };
+    if (!self.marquee_add) b.sel.clear(); // rebuild the selection from the box each frame
+    const cur = c.igGetMousePos();
+    return .{
+        cimgui.vec2(@min(self.marquee_start.x, cur.x), @min(self.marquee_start.y, cur.y)),
+        cimgui.vec2(@max(self.marquee_start.x, cur.x), @max(self.marquee_start.y, cur.y)),
+    };
+}
+
 pub fn rectsOverlap(a_min: c.ImVec2_c, a_max: c.ImVec2_c, b_min: c.ImVec2_c, b_max: c.ImVec2_c) bool {
     return a_min.x <= b_max.x and a_max.x >= b_min.x and a_min.y <= b_max.y and a_max.y >= b_min.y;
 }

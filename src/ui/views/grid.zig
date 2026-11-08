@@ -61,25 +61,11 @@ pub const GridView = struct {
         const area_h = if (list_height > 0) list_height else avail.y + list_height;
         const area_max = cimgui.vec2(area_min.x + avail.x, area_min.y + area_h);
 
-        // Rubber band, as in the table: a press on empty space starts it.
+        // Rubber band, as in the table (a press on empty space, dragged).
         const tv = &self.base;
-        if (!tv.marquee_active and c.igIsWindowHovered(c.ImGuiHoveredFlags_ChildWindows) and c.igIsMouseHoveringRect(area_min, area_max, false) and
-            !c.igIsAnyItemHovered() and c.igIsMouseClicked_Bool(0, false))
-        {
-            tv.marquee_active = true;
-            tv.marquee_add = c.igIsKeyDown_Nil(c.ImGuiMod_Ctrl) or c.igIsKeyDown_Nil(c.ImGuiMod_Shift);
-            tv.marquee_start = c.igGetMousePos();
-            if (!tv.marquee_add) b.sel.clear();
-        }
-        if (tv.marquee_active and (c.igGetDragDropPayload() != null or !c.igIsMouseDown_Nil(0))) tv.marquee_active = false;
-        var mr_min = cimgui.vec2(0, 0);
-        var mr_max = cimgui.vec2(0, 0);
-        if (tv.marquee_active) {
-            const cur = c.igGetMousePos();
-            mr_min = cimgui.vec2(@min(tv.marquee_start.x, cur.x), @min(tv.marquee_start.y, cur.y));
-            mr_max = cimgui.vec2(@max(tv.marquee_start.x, cur.x), @max(tv.marquee_start.y, cur.y));
-            if (!tv.marquee_add) b.sel.clear();
-        }
+        const box = table.marquee(tv, b, area_min, area_max);
+        const mr_min = box[0];
+        const mr_max = box[1];
 
         if (!c.igBeginChild_Str("##grid", cimgui.vec2(0, list_height), 0, 0)) {
             c.igEndChild();
